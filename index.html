@@ -3,29 +3,180 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>哥布林堵城 · 素坯</title>
+<title>哥布林堵城</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <style>
-/* 故意零美术：功能性样式，等待翻新 */
-body { font-family: monospace; background:#eee; color:#111; margin:8px; }
-#layout { display:flex; gap:12px; flex-wrap:wrap; }
-#board { display:grid; grid-template-columns:repeat(10,22px); grid-auto-rows:22px; border:2px solid #333; width:max-content; }
-#board div { border:1px solid #ccc; box-sizing:border-box; }
-#board div.f { background:#888; }
-#board div.g { background:#ca0; }
-#board div.s { background:#bcc; }
-#board div.b { background:#844; }
-#board div.a { background:#444; }
-#belt { display:flex; gap:4px; margin-bottom:8px; align-items:flex-start; }
-.slot { width:56px; height:72px; border:1px dashed #999; text-align:center; cursor:pointer; background:#fff; touch-action:none; user-select:none; }
-.slot .nm { font-size:20px; line-height:44px; pointer-events:none; }
-.slot .mt { font-size:11px; pointer-events:none; }
-.slot.m1 { background:#ddd; }
-.slot.m2 { background:#eec; }
-.mergebtn { font-size:11px; width:100%; }
-#queue { display:flex; gap:4px; margin-bottom:8px; }
-#hud { font-size:13px; white-space:pre; margin-bottom:6px; }
-#report { white-space:pre; background:#fff; border:1px solid #333; padding:8px; display:none; }
-button.op { margin:2px; padding:6px 10px; }
+/* ============ 翻新表现层：暗夜攻城主题，全部 CSS 绘制，零外部素材 ============ */
+:root{
+  --cell: clamp(15px, min(calc((100vw - 24px)/10), calc((100vh - 336px)/21)), 34px);
+  --cell: clamp(15px, min(calc((100vw - 24px)/10), calc((100dvh - 336px)/21)), 34px);
+  --bw: calc(var(--cell)*10 + 6px);
+  --gold1:#ffe58a; --gold2:#d9a417; --gold3:#8a6108;
+  --sil1:#f4f7fb; --sil2:#aeb9c6; --sil3:#6f7a88;
+}
+*{ -webkit-tap-highlight-color:transparent; }
+html,body{ margin:0; padding:0; }
+body{
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  background:radial-gradient(1200px 700px at 50% -10%, #232041 0%, #14121f 55%, #0b0a12 100%);
+  background-attachment:fixed;
+  color:#e8e4f0; min-height:100dvh; display:flex; justify-content:center;
+  user-select:none; -webkit-user-select:none; overscroll-behavior:none;
+}
+#app{ width:max-content; max-width:100vw; box-sizing:border-box; padding:8px 10px 20px;
+  display:flex; flex-direction:column; align-items:center; gap:7px; }
+
+#topbar{ width:var(--bw); display:flex; align-items:center; justify-content:space-between; }
+#topbar h1{ font-size:17px; margin:0; letter-spacing:2px; color:#ffd76a;
+  text-shadow:0 0 14px rgba(255,180,40,.4); }
+#topbar .seed{ font-size:10px; color:#8b86a0; margin-left:6px; }
+#topbar .grow{ flex:1; }
+.icobtn{ background:#262238; border:1px solid #3d3757; color:#e8e4f0; border-radius:8px;
+  font-size:14px; width:32px; height:32px; cursor:pointer; margin-left:6px; }
+.icobtn:active{ filter:brightness(1.3); }
+
+#hud{ width:var(--bw); display:flex; justify-content:space-between; align-items:center; font-size:13px; }
+#hud .grp{ display:flex; align-items:center; gap:2px; min-width:64px; }
+#hud #score{ justify-content:center; color:#ffd76a; font-weight:700; }
+#hud .grp:last-child{ justify-content:flex-end; }
+.pip{ font-size:15px; transition:filter .3s, opacity .3s, transform .3s; }
+.pip.off{ filter:grayscale(1); opacity:.22; transform:scale(.8); }
+
+#fuse{ width:var(--bw); height:20px; background:#1b1828; border:1px solid #38324e;
+  border-radius:10px; position:relative; overflow:hidden; }
+#fusefill{ position:absolute; inset:0; background:linear-gradient(90deg,#5c9c24,#86c232);
+  transform-origin:left; transform:scaleX(0); }
+#fusetxt{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-size:11px; color:#eaf3da; text-shadow:0 1px 2px rgba(0,0,0,.75); }
+#fuse.urgent #fusefill{ background:linear-gradient(90deg,#c23b2a,#f0653a); }
+#fuse.urgent{ animation:fusepulse .5s infinite alternate; }
+@keyframes fusepulse{ from{ box-shadow:0 0 0 rgba(240,80,50,0); } to{ box-shadow:0 0 16px rgba(240,80,50,.85); } }
+#fuse.rw{ animation:rewindflash .6s; }
+@keyframes rewindflash{ 0%{ box-shadow:0 0 0 rgba(90,200,255,0); } 30%{ box-shadow:0 0 20px rgba(90,200,255,.95); } 100%{ box-shadow:0 0 0 rgba(90,200,255,0); } }
+
+#belt{ display:flex; gap:4px; padding:6px; border-radius:10px; border:1px solid #38324e;
+  background:repeating-linear-gradient(45deg,#232033 0 10px,#1b1929 10px 20px);
+  animation:beltmove 1.1s linear infinite; }
+@keyframes beltmove{ to{ background-position:28.28px 0; } }
+#belt.busy .slot{ opacity:.45; }
+.slot{ width:calc(var(--cell)*1.5); min-width:35px; height:calc(var(--cell)*2.1); min-height:48px;
+  background:#141222; border:1px solid #322d49; border-radius:7px; position:relative; cursor:pointer;
+  touch-action:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; }
+.slot.m1{ border-color:#9fb0c3; box-shadow:0 0 8px rgba(180,200,220,.35), inset 0 0 6px rgba(180,200,220,.15); }
+.slot.m2{ border-color:#e7b93c; animation:goldpulse 1.6s infinite; }
+.slot.pop{ animation:pop .28s; }
+@keyframes pop{ 0%{ transform:scale(.5); } 70%{ transform:scale(1.08); } 100%{ transform:scale(1); } }
+@keyframes goldpulse{
+  0%,100%{ box-shadow:0 0 8px rgba(255,200,60,.5), inset 0 0 8px rgba(255,200,60,.2); }
+  50%{ box-shadow:0 0 18px rgba(255,210,80,.9), inset 0 0 10px rgba(255,210,80,.4); } }
+.pv{ display:grid; grid-template-columns:repeat(4,8px); grid-auto-rows:8px; pointer-events:none; }
+.pv i{ border-radius:1.5px; background:var(--pc);
+  box-shadow:inset 1px 1px 0 rgba(255,255,255,.35), inset -1px -1px 0 rgba(0,0,0,.3); }
+.p0{ --pc:#22d3ee; } .p1{ --pc:#facc15; } .p2{ --pc:#a78bfa; } .p3{ --pc:#4ade80; }
+.p4{ --pc:#f87171; } .p5{ --pc:#60a5fa; } .p6{ --pc:#fb923c; }
+.pv.pm1 i{ background:linear-gradient(145deg,var(--sil1),#8b98a8); }
+.pv.pm2 i{ background:linear-gradient(145deg,var(--gold1),#c9920f); }
+.slot .mt{ font-size:9px; color:#a49dc0; pointer-events:none; line-height:1; }
+.slot.m1 .mt{ color:#cfe0ef; } .slot.m2 .mt{ color:#ffd76a; }
+.mergebtn{ position:absolute; top:-9px; right:-7px; font-size:10px; padding:3px 5px; border-radius:6px;
+  border:1px solid #6b5a1e; background:linear-gradient(180deg,#ffe58a,#d9a417); color:#3a2c05;
+  font-weight:700; cursor:pointer; z-index:2; }
+
+#stage{ touch-action:none; }
+#stage.shake-s{ animation:shakes .25s; }
+#stage.shake-l{ animation:shakel .5s; }
+@keyframes shakes{ 25%{ transform:translate(-3px,2px); } 50%{ transform:translate(3px,-2px); } 75%{ transform:translate(-2px,1px); } }
+@keyframes shakel{ 15%{ transform:translate(-7px,4px); } 30%{ transform:translate(6px,-5px); } 45%{ transform:translate(-5px,3px); }
+  60%{ transform:translate(4px,-2px); } 75%{ transform:translate(-3px,1px); } 90%{ transform:translate(2px,-1px); } }
+
+#boardwrap{ position:relative; }
+#board{ display:grid; grid-template-columns:repeat(10,var(--cell)); grid-auto-rows:var(--cell);
+  background:linear-gradient(180deg,#161325,#12101d);
+  border:3px solid #463f5e; border-radius:6px;
+  box-shadow:0 6px 24px rgba(0,0,0,.5), inset 0 0 30px rgba(0,0,0,.45); }
+#board.hasgob{ box-shadow:0 6px 24px rgba(0,0,0,.5), inset 0 -18px 26px rgba(120,200,40,.2), inset 0 0 30px rgba(0,0,0,.45); }
+#board>div{ box-sizing:border-box; border-radius:2px; position:relative; }
+#board .c1{ background:linear-gradient(145deg,#828797,#5a5f6c);
+  box-shadow:inset 1px 1px 0 rgba(255,255,255,.22), inset -2px -2px 0 rgba(0,0,0,.35); }
+#board .c2{ background:linear-gradient(145deg,var(--gold1),var(--gold2) 55%,var(--gold3));
+  box-shadow:inset 1px 1px 0 rgba(255,255,255,.5), inset -2px -2px 0 rgba(90,60,0,.5), 0 0 6px rgba(255,200,60,.45); }
+#board .c4{ background:linear-gradient(145deg,var(--sil1),var(--sil2) 55%,var(--sil3));
+  box-shadow:inset 1px 1px 0 rgba(255,255,255,.6), inset -2px -2px 0 rgba(40,50,60,.45); }
+#board .c3{ background:linear-gradient(160deg,#55831a,#33510d);
+  box-shadow:inset 0 2px 0 rgba(190,255,120,.25), inset 0 -2px 0 rgba(0,0,0,.4); }
+#board .c3::after{ content:"👺"; position:absolute; inset:0; display:flex; align-items:center;
+  justify-content:center; font-size:calc(var(--cell)*.64); animation:gob 1.5s ease-in-out infinite; }
+@keyframes gob{ 50%{ transform:translateY(-1px); } }
+#board .pc{ box-shadow:inset 1px 1px 0 rgba(255,255,255,.4), inset -2px -2px 0 rgba(0,0,0,.32); }
+#board .p0{ background:linear-gradient(145deg,#8ef4ff,#22d3ee 55%,#0d94ad); }
+#board .p1{ background:linear-gradient(145deg,#fde68a,#facc15 55%,#b8900a); }
+#board .p2{ background:linear-gradient(145deg,#d4c6ff,#a78bfa 55%,#7456d6); }
+#board .p3{ background:linear-gradient(145deg,#a1f4c3,#4ade80 55%,#25a356); }
+#board .p4{ background:linear-gradient(145deg,#ffb1a8,#f87171 55%,#c23a3a); }
+#board .p5{ background:linear-gradient(145deg,#a9ccff,#60a5fa 55%,#2f6fd0); }
+#board .p6{ background:linear-gradient(145deg,#ffc89a,#fb923c 55%,#c05f14); }
+#board .pm1{ background:linear-gradient(145deg,var(--sil1),var(--sil2) 55%,var(--sil3));
+  box-shadow:inset 1px 1px 0 #fff, inset -2px -2px 0 rgba(40,50,60,.5), 0 0 8px rgba(200,220,240,.55); }
+#board .pm2{ background:linear-gradient(145deg,var(--gold1),var(--gold2) 55%,var(--gold3));
+  box-shadow:inset 1px 1px 0 #fff, inset -2px -2px 0 rgba(90,60,0,.5), 0 0 10px rgba(255,200,60,.75);
+  animation:goldpulse 1.2s infinite; }
+#board .gh{ border:2px dashed #888; opacity:.4; }
+#board .g0{ border-color:#22d3ee; } #board .g1{ border-color:#facc15; } #board .g2{ border-color:#a78bfa; }
+#board .g3{ border-color:#4ade80; } #board .g4{ border-color:#f87171; } #board .g5{ border-color:#60a5fa; }
+#board .g6{ border-color:#fb923c; }
+#rowfx{ position:absolute; inset:0; pointer-events:none; overflow:hidden; border-radius:6px; }
+.rowflash{ position:absolute; left:0; right:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.95),transparent);
+  mix-blend-mode:screen; animation:rf .5s forwards; }
+@keyframes rf{ 0%{ opacity:0; transform:scaleX(.2); } 25%{ opacity:1; } 100%{ opacity:0; transform:scaleX(1.05); } }
+
+#castle{ width:var(--bw); box-sizing:border-box; height:calc(var(--cell)*1.9); margin-top:8px; position:relative;
+  background:linear-gradient(180deg,#5b5470,#3c364e);
+  border:3px solid #2a2538; border-radius:4px 4px 8px 8px; }
+#castle::before{ content:""; position:absolute; top:-9px; left:-3px; right:-3px; height:9px;
+  background:repeating-linear-gradient(90deg,#5b5470 0 9%, transparent 9% 15%); }
+#castle::after{ content:""; position:absolute; bottom:0; left:50%; transform:translateX(-50%);
+  width:22%; height:62%; background:radial-gradient(ellipse at 50% 0%, #191522 60%, #0d0b14);
+  border-radius:50% 50% 0 0 / 45% 45% 0 0; }
+#castlelabel{ position:absolute; inset:0; z-index:1; display:flex; align-items:center; justify-content:center;
+  font-size:11px; letter-spacing:1px; color:#cfc8e2; text-shadow:0 1px 2px #000; pointer-events:none; }
+#castle.hit{ animation:castlehit .5s; }
+@keyframes castlehit{ 0%{ filter:brightness(2.4) hue-rotate(-40deg); } 100%{ filter:none; } }
+#castle.broken{ filter:grayscale(.85) brightness(.6); transform:rotate(-1.5deg) translateY(3px); }
+
+#status{ font-size:12px; color:#cfc8e2; min-height:16px; text-align:center; }
+#controls{ display:flex; gap:6px; width:var(--bw); }
+.op{ flex:1; padding:9px 0; font-size:15px; border-radius:10px; border:1px solid #413a5c;
+  background:linear-gradient(180deg,#322c4c,#241f38); color:#e8e4f0; cursor:pointer; touch-action:manipulation; }
+.op:active{ transform:translateY(1px); filter:brightness(1.3); }
+#hint{ font-size:10px; color:#7d7794; text-align:center; }
+#rules{ width:var(--bw); font-size:11px; color:#9b94b2; }
+#rules summary{ cursor:pointer; color:#b9b3cc; }
+#rules p{ line-height:1.75; margin:6px 0 0; }
+#rules b{ color:#e8e4f0; }
+
+#fx{ position:fixed; inset:0; pointer-events:none; z-index:43; }
+#floats{ position:fixed; inset:0; pointer-events:none; z-index:45; }
+.float{ position:absolute; transform:translate(-50%,-50%); font-weight:800; font-size:16px;
+  text-shadow:0 2px 4px rgba(0,0,0,.85); animation:floatup 1.3s forwards; white-space:nowrap; }
+.float.gold{ color:#ffd76a; } .float.cyan{ color:#7de3ff; } .float.red{ color:#ff7a6b; } .float.green{ color:#a4e34d; }
+@keyframes floatup{ 0%{ opacity:0; margin-top:0; } 15%{ opacity:1; } 100%{ opacity:0; margin-top:-46px; } }
+#hurt{ position:fixed; inset:0; pointer-events:none; z-index:44; opacity:0;
+  background:radial-gradient(ellipse at center, transparent 55%, rgba(200,30,30,.55)); }
+#hurt.on{ animation:hurtf .6s; }
+@keyframes hurtf{ 0%{ opacity:0; } 20%{ opacity:1; } 100%{ opacity:0; } }
+
+#overlay{ position:fixed; inset:0; z-index:60; display:none; flex-direction:column;
+  align-items:center; justify-content:center; gap:14px; background:rgba(8,6,14,.85); backdrop-filter:blur(4px); }
+#overlay.show{ display:flex; }
+#ovtitle{ font-size:32px; font-weight:900; letter-spacing:3px; text-align:center; padding:0 16px; }
+#overlay.win #ovtitle{ color:#ffd76a; text-shadow:0 0 24px rgba(255,190,50,.7); animation:winpop .6s; }
+#overlay.lose #ovtitle{ color:#ff7a6b; text-shadow:0 0 24px rgba(255,60,40,.6); }
+@keyframes winpop{ 0%{ transform:scale(.3); opacity:0; } 70%{ transform:scale(1.12); } 100%{ transform:scale(1); } }
+#ovsub{ font-size:14px; color:#b9b3cc; }
+#ovbtn{ padding:10px 26px; font-size:16px; border-radius:12px; border:1px solid #6b5a1e;
+  background:linear-gradient(180deg,#ffe58a,#d9a417); color:#3a2c05; font-weight:800; cursor:pointer; }
+#report{ white-space:pre; background:#141222; color:#e8e4f0; border:1px solid #333; padding:8px; display:none; }
 </style>
 </head>
 <body>
@@ -349,39 +500,64 @@ if (typeof module !== "undefined") module.exports = { newGame, tickOnce, applyAc
 /* ========================= 封条区结束 ========================= */
 </script>
 
-<h3>哥布林堵城（素坯）</h3>
-<div id="belt"></div>
-<div id="queue"></div>
-<div id="hud"></div>
-<div id="layout">
-  <div id="board"></div>
-  <div>
-    <div>
-      <button class="op" data-a="L">←</button>
-      <button class="op" data-a="R">→</button>
-      <button class="op" data-a="U">旋转</button>
-      <button class="op" data-a="D">软降</button>
-      <button class="op" data-a="H">硬降</button>
-    </div>
-    <p style="max-width:320px;font-size:12px">
-      底下是哥布林城堡（3 血）。哥布林层每 25 秒从底部上顶一层当城堡的盾；
-      没有空间上顶时改为直击你的城墙（3 血），血掉完你输。
-      砸层效果在哥布林层清空时会直接伤害城堡——城堡血清空，破城通关。
-      传送带左进右出，到头排队等待，<b>不会自动下落，也不能丢弃</b>：
-      <b>点击方块 = 出战开始下落</b>；场上有下落块时不能再选。
-      相邻两个同形状可合成<b>银</b>，三个合成<b>金</b>，两个银也可合成金。
-      银块与金块落地后，格子作为银格/金格留在墙里：含银格的行被消除时哥布林计时回拨 15 秒，
-      含金格的行被消除时砸 1 层。银块落地直接消行额外砸 1 层，金块则合计砸 2 层。
-      键盘：←→↓，↑旋转，空格硬降。
-    </p>
+<div id="app">
+  <div id="topbar">
+    <h1>⚔️ 哥布林堵城</h1>
+    <span class="seed"></span>
+    <span class="grow"></span>
+    <button id="mutebtn" class="icobtn" title="音效开关">🔊</button>
+    <button id="restartbtn" class="icobtn" title="重开本局">↻</button>
   </div>
+  <div id="hud">
+    <div class="grp" id="hearts" title="我方城墙"></div>
+    <div class="grp" id="score"></div>
+    <div class="grp" id="cpips" title="敌方城堡"></div>
+  </div>
+  <div id="fuse"><div id="fusefill"></div><div id="fusetxt"></div></div>
+  <div id="belt"></div>
+  <div id="stage">
+    <div id="boardwrap">
+      <div id="board"></div>
+      <div id="rowfx"></div>
+    </div>
+    <div id="castle"><span id="castlelabel">👺 哥布林城堡</span></div>
+  </div>
+  <div id="status"></div>
+  <div id="controls">
+    <button class="op" data-a="L">←</button>
+    <button class="op" data-a="R">→</button>
+    <button class="op" data-a="U">旋转</button>
+    <button class="op" data-a="D">软降</button>
+    <button class="op" data-a="H">硬降</button>
+  </div>
+  <div id="hint">键盘 ←→↓ · ↑ 旋转 · 空格硬降 ｜ 触屏：拖动移动 · 轻点旋转 · 下拖软降 · 快速下甩硬降</div>
+  <details id="rules">
+    <summary>玩法说明</summary>
+    <p>
+      这是一场攻城战：盘面底部是<b>哥布林城堡（3 血）</b>，砸空它的血即破城通关；你自己有<b>城墙 3 血</b>，掉完判负。
+      哥布林层每 25 秒从盘面底部上顶一层，既把你往上挤、也是城堡的盾；<b>没有空间上顶时改为直击你的城墙 1 血</b>。
+      哥布林层不可用普通消行清除，只有砸层效果能消灭它；砸层效果在场上已无哥布林层时，直接对城堡造成 1 点伤害。
+      传送带 8 槽左进右出、逐格前进，到头排队等待；方块<b>不会自动下落、也不能丢弃</b>：<b>点击方块 = 出战开始下落</b>，场上同时只有一个下落块。
+      相邻 2 个同形状普通方块可合成<b>银块</b>，3 个合成<b>金块</b>，2 个银块也可合成金块。
+      <b>银块落地</b>：四格作为银格留在墙里；含银格的行被消除时哥布林计时回拨 15 秒；银块落地直接消行则额外砸 1 层。
+      <b>金块落地</b>：四格作为金格留在墙里；含金格的行被消除时砸 1 层；金块落地直接消行则合计砸 2 层。
+    </p>
+  </details>
+</div>
+<canvas id="fx"></canvas>
+<div id="floats"></div>
+<div id="hurt"></div>
+<div id="overlay">
+  <div id="ovtitle"></div>
+  <div id="ovsub"></div>
+  <button id="ovbtn">再来一局</button>
 </div>
 <pre id="report"></pre>
 
 <script id="game-ui">
 /* ============================================================
-   UI 层 —— 翻新自由区。可整体重写，但只能通过 window.GameAPI
-   驱动游戏，不得触碰封条区内部状态语义。
+   UI 层 —— 翻新自由区。只通过封条区导出的函数驱动游戏；
+   一切演出效果由「状态快照 diff」触发，不改写任何逻辑语义。
    ============================================================ */
 "use strict";
 (function () {
@@ -396,101 +572,436 @@ if (typeof module !== "undefined") module.exports = { newGame, tickOnce, applyAc
   }
 
   const g = newGame(seed);
-  window.GameAPI = {
-    left: () => applyAction(g, "L"), right: () => applyAction(g, "R"),
-    rotate: () => applyAction(g, "U"), soft: () => applyAction(g, "D"),
-    hard: () => applyAction(g, "H"),
-    pick: i => pickBelt(g, i), merge: i => mergeAt(g, i),
-    state: () => g
-  };
+  const $ = id => document.getElementById(id);
+  const boardEl = $("board"), beltEl = $("belt"), stageEl = $("stage"),
+        fuseEl = $("fuse"), fuseFill = $("fusefill"), castleEl = $("castle"),
+        heartsEl = $("hearts"), cpipsEl = $("cpips"), rowfxEl = $("rowfx"),
+        floatsEl = $("floats"), hurtEl = $("hurt"), overlayEl = $("overlay");
+  document.querySelector("#topbar .seed").textContent = "seed " + g.seedStr;
 
-  /* 传送带 DOM 只在内容变化时重建，否则指针目标会被每帧重建摧毁 */
-  let beltSig = null;
-  function renderBelt() {
-    const sig = g.belt.map(it => it ? it.s + "." + it.m : "_").join(",");
-    if (sig === beltSig) return;
-    beltSig = sig;
-    const beltEl = document.getElementById("belt");
-    beltEl.innerHTML = "";
-    for (let i = CFG.beltSlots - 1; i >= 0; i--) {
-      const it = g.belt[i];
-      const d = document.createElement("div");
-      d.className = "slot" + (it ? " m" + it.m : "");
-      if (it) {
-        d.innerHTML = '<div class="nm">' + NAMES[it.s] + '</div><div class="mt">' + MATS[it.m] + "</div>";
-        /* 点方块 = 出战；点合成按钮 = 合成。
-           pointer capture 会把 pointerup 劫持回槽位，按钮 click 不可靠，
-           所以合成也走同一套指针判定。 */
-        d.onpointerdown = e => {
-          d._btn = e.target.tagName === "BUTTON";
-          d._dn = true;
-          d.setPointerCapture(e.pointerId);
-        };
-        d.onpointerup = () => {
-          if (!d._dn) return;
-          const wasBtn = d._btn;
-          d._dn = false; d._btn = false;
-          if (wasBtn) mergeAt(g, i);
-          else pickBelt(g, i);
-        };
-        const info = mergeInfo(g, i);
-        if (info) {
-          const b = document.createElement("button");
-          b.className = "mergebtn";
-          b.textContent = "合" + info.take + "→" + MATS[info.mat];
-          d.appendChild(b);
-        }
-      }
-      beltEl.appendChild(d);
+  /* ---------- 音效：全部 WebAudio 程序合成，零素材 ---------- */
+  let AC = null, muted = false;
+  function ac() {
+    if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+    if (AC && AC.state === "suspended") AC.resume();
+    return AC;
+  }
+  function tone(f, d, type, v, when, slide) {
+    const c = ac(); if (!c || muted) return;
+    const t0 = c.currentTime + (when || 0);
+    const o = c.createOscillator(), gn = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t0);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + d);
+    gn.gain.setValueAtTime(v, t0);
+    gn.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+    o.connect(gn); gn.connect(c.destination);
+    o.start(t0); o.stop(t0 + d + 0.02);
+  }
+  function nz(d, v, when, fc) {
+    const c = ac(); if (!c || muted) return;
+    const t0 = c.currentTime + (when || 0);
+    const len = Math.floor(c.sampleRate * d);
+    const buf = c.createBuffer(1, len, c.sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = c.createBufferSource(); src.buffer = buf;
+    const fl = c.createBiquadFilter(); fl.type = "lowpass"; fl.frequency.value = fc;
+    const gn = c.createGain(); gn.gain.value = v;
+    src.connect(fl); fl.connect(gn); gn.connect(c.destination);
+    src.start(t0);
+  }
+  const SFX = {
+    pick:   () => { tone(520, .07, "square", .10); tone(780, .06, "square", .07, .05); },
+    merge1: () => { tone(440, .08, "triangle", .14); tone(660, .10, "triangle", .14, .08); },
+    merge2: () => { [523, 659, 784, 1046].forEach((f, i) => tone(f, .10, "triangle", .15, i * .06)); },
+    lock:   () => tone(150, .06, "triangle", .16),
+    hard:   () => { tone(95, .12, "sine", .30, 0, 45); nz(.08, .20, 0, 400); },
+    clear:  () => [660, 880, 1175].forEach((f, i) => tone(f, .07, "square", .09, i * .05)),
+    rewind: () => tone(880, .28, "sine", .12, 0, 220),
+    smash:  () => { nz(.15, .25, 0, 600); tone(160, .15, "sawtooth", .14, 0, 60); },
+    rise:   () => { tone(70, .5, "sawtooth", .22, 0, 48); nz(.3, .10, 0, 220); },
+    wall:   () => { nz(.25, .30, 0, 300); tone(60, .3, "sine", .32, 0, 38); },
+    castle: () => { nz(.4, .35, 0, 500); tone(55, .5, "sine", .38, 0, 30); },
+    win:    () => [523, 659, 784, 1046, 1318].forEach((f, i) => tone(f, .18, "triangle", .16, i * .12)),
+    lose:   () => [330, 262, 196, 131].forEach((f, i) => tone(f, .25, "sawtooth", .14, i * .18))
+  };
+  function sfx(k) { if (!muted && SFX[k]) SFX[k](); }
+  document.addEventListener("pointerdown", ac, { once: true });
+  document.addEventListener("keydown", ac, { once: true });
+
+  /* ---------- 粒子（单个全屏 canvas，CSS 像素坐标） ---------- */
+  const cv = $("fx"), fx2d = cv.getContext("2d");
+  function resizeFx() {
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+    fx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resizeFx(); addEventListener("resize", resizeFx);
+  const P = [];
+  const KINDS = {
+    dust:     { c: ["#8b8496", "#6d6579", "#a39bab"], g: 300, s: [20, 90],  l: [.3, .7],  r: [1.5, 3] },
+    gold:     { c: ["#ffe58a", "#ffd23c", "#fff6c8"], g: 200, s: [40, 140], l: [.4, .9],  r: [1.5, 3] },
+    silv:     { c: ["#eef4fb", "#c3d2e0", "#ffffff"], g: 150, s: [30, 110], l: [.3, .8],  r: [1, 2.5] },
+    gob:      { c: ["#86c232", "#4d7c0f", "#b6e36a"], g: 260, s: [40, 160], l: [.4, .9],  r: [1.5, 3.5] },
+    boom:     { c: ["#ff9a3c", "#ff5a3c", "#ffd23c", "#fff6c8"], g: 180, s: [60, 260], l: [.4, 1], r: [2, 4.5] },
+    spawn:    { c: ["#9fd8ff", "#ffffff"], g: -40, s: [20, 80], l: [.3, .6], r: [1, 2.5] },
+    confetti: { c: ["#ffd23c", "#7de3ff", "#ff7ab8", "#a4e34d", "#c9b8ff"], g: 220, s: [80, 300], l: [.8, 1.6], r: [2, 4] }
+  };
+  function burst(x, y, kind, n) {
+    const K = KINDS[kind]; if (!K) return;
+    for (let i = 0; i < n; i++) {
+      if (P.length > 240) break;
+      const a = Math.random() * Math.PI * 2, sp = K.s[0] + Math.random() * (K.s[1] - K.s[0]);
+      P.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40, g: K.g,
+               t: 0, l: K.l[0] + Math.random() * (K.l[1] - K.l[0]),
+               r: K.r[0] + Math.random() * (K.r[1] - K.r[0]),
+               c: K.c[(Math.random() * K.c.length) | 0] });
     }
   }
+  let lastFx = performance.now();
+  function stepFx(now) {
+    const dt = Math.min(.05, (now - lastFx) / 1000); lastFx = now;
+    fx2d.clearRect(0, 0, innerWidth, innerHeight);
+    for (let i = P.length - 1; i >= 0; i--) {
+      const p = P[i]; p.t += dt;
+      if (p.t >= p.l) { P.splice(i, 1); continue; }
+      p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+      fx2d.globalAlpha = 1 - p.t / p.l; fx2d.fillStyle = p.c;
+      fx2d.beginPath(); fx2d.arc(p.x, p.y, p.r, 0, 6.2832); fx2d.fill();
+    }
+    fx2d.globalAlpha = 1;
+  }
 
-  const boardEl = document.getElementById("board");
+  /* ---------- 演出小件 ---------- */
+  function shake(l) {
+    stageEl.classList.remove("shake-s", "shake-l");
+    void stageEl.offsetWidth;
+    stageEl.classList.add("shake-" + l);
+  }
+  function hurtFlash() { hurtEl.classList.remove("on"); void hurtEl.offsetWidth; hurtEl.classList.add("on"); }
+  function float(txt, x, y, cls) {
+    const d = document.createElement("div");
+    d.className = "float " + (cls || "");
+    d.textContent = txt;
+    d.style.left = x + "px"; d.style.top = y + "px";
+    floatsEl.appendChild(d);
+    setTimeout(() => d.remove(), 1400);
+  }
+  function rowFlash(rows) {
+    const r = boardEl.getBoundingClientRect(), ch = r.height / CFG.rows;
+    rows.forEach(y => {
+      const d = document.createElement("div");
+      d.className = "rowflash";
+      d.style.top = y * ch + "px"; d.style.height = ch + "px";
+      rowfxEl.appendChild(d);
+      setTimeout(() => d.remove(), 550);
+    });
+  }
+  function cellCenter(x, y) {
+    const r = boardEl.getBoundingClientRect();
+    return { x: r.left + (x + .5) * r.width / CFG.cols, y: r.top + (y + .5) * r.height / CFG.rows };
+  }
+  function placeCells(p) {
+    return SHAPES[p.s][p.r].map(c => [p.x + c[0], p.y + c[1]]).filter(c => c[1] >= 0);
+  }
+
+  /* ---------- 事件 diff：每次状态变更前后各取快照，对比计数器触发演出 ---------- */
+  let flagHard = false;
+  function snap() {
+    return {
+      n: Object.assign({}, g.n), over: g.over,
+      active: g.active ? { s: g.active.s, m: g.active.m, r: g.active.r, x: g.active.x, y: g.active.y } : null,
+      board: g.active ? g.board.map(r => r.slice()) : null
+    };
+  }
+  function withSnap(fn) { const s = snap(); fn(); diff(s); }
+  function diff(s) {
+    const n = g.n;
+    if (n.picks > s.n.picks) fxPick();
+    if (n.mergeSilver > s.n.mergeSilver) fxMerge(1);
+    if (n.mergeGold > s.n.mergeGold) fxMerge(2);
+    if (n.locks > s.n.locks && s.active) fxLock(s);
+    if (n.silverDelays > s.n.silverDelays) fxRewind();
+    if (n.goblinKill > s.n.goblinKill) fxSmash(n.goblinKill - s.n.goblinKill);
+    if (n.goblinRise > s.n.goblinRise) fxRise();
+    if (n.playerHit > s.n.playerHit) fxWallHit();
+    if (n.castleHit > s.n.castleHit) fxCastleHit();
+    if (!s.over && g.over) { if (g.win) fxWin(); else fxLose(); }
+  }
+
+  function fxPick() {
+    sfx("pick");
+    if (g.active) placeCells(g.active).forEach(c => {
+      const pt = cellCenter(c[0], c[1]); burst(pt.x, pt.y, "spawn", 4);
+    });
+  }
+  function fxMerge(m) {
+    sfx(m === 2 ? "merge2" : "merge1");
+    const r = beltEl.getBoundingClientRect();
+    float(m === 2 ? "✨ 合成金块！" : "⚙️ 合成银块", r.left + r.width / 2, r.top - 4, m === 2 ? "gold" : "cyan");
+    if (m === 2) burst(r.left + r.width / 2, r.top + r.height / 2, "gold", 26);
+  }
+  function fxLock(s) {
+    const p = s.active, cs = placeCells(p);
+    const b = s.board.map(r => r.slice());
+    const val = p.m === 2 ? 2 : p.m === 1 ? 4 : 1;
+    cs.forEach(c => { b[c[1]][c[0]] = val; });
+    const full = [];
+    for (let y = 0; y < CFG.rows; y++)
+      if (b[y].every(v => v === 1 || v === 2 || v === 4)) full.push(y);
+    const hard = flagHard; flagHard = false;
+    if (hard) {
+      shake("s"); sfx("hard");
+      cs.forEach(c => { const pt = cellCenter(c[0], c[1]); burst(pt.x, pt.y, "dust", 5); });
+    } else sfx("lock");
+    if (p.m === 2) cs.forEach(c => { const pt = cellCenter(c[0], c[1]); burst(pt.x, pt.y, "gold", 7); });
+    else if (p.m === 1) cs.forEach(c => { const pt = cellCenter(c[0], c[1]); burst(pt.x, pt.y, "silv", 5); });
+    if (full.length) {
+      rowFlash(full); sfx("clear");
+      const pt = cellCenter(4.5, full[full.length - 1]);
+      if (full.some(y => b[y].includes(2))) float("💥 金格引爆，砸层！", pt.x, pt.y, "gold");
+      if (p.m === 1) float("⚔️ 银块落地消行，砸层 +1", pt.x, pt.y - 22, "cyan");
+      if (p.m === 2) float("⚔️ 金块落地消行，砸层 ×2", pt.x, pt.y - 22, "gold");
+    }
+  }
+  function fxRewind() {
+    sfx("rewind");
+    const r = fuseEl.getBoundingClientRect();
+    float("⏪ 哥布林计时回拨 15s", r.left + r.width / 2, r.top - 6, "cyan");
+    fuseEl.classList.remove("rw"); void fuseEl.offsetWidth; fuseEl.classList.add("rw");
+  }
+  function fxSmash(k) {
+    sfx("smash"); shake("s");
+    const r = boardEl.getBoundingClientRect();
+    for (let i = 0; i < 18; i++) burst(r.left + Math.random() * r.width, r.bottom - 8, "gob", 2);
+    float("⚔️ 砸层 ×" + k, r.left + r.width / 2, r.bottom - 60, "gold");
+  }
+  function fxRise() {
+    sfx("rise"); shake("l");
+    const r = boardEl.getBoundingClientRect();
+    for (let i = 0; i < 12; i++) burst(r.left + Math.random() * r.width, r.bottom - 4, "gob", 2);
+    float("👺 哥布林上顶！", r.left + r.width / 2, r.bottom - 34, "green");
+  }
+  function fxWallHit() {
+    sfx("wall"); shake("l"); hurtFlash();
+    const r = boardEl.getBoundingClientRect();
+    float("💔 城墙被直击 -1", r.left + r.width / 2, r.top + 40, "red");
+  }
+  function fxCastleHit() {
+    sfx("castle"); shake("l");
+    const r = castleEl.getBoundingClientRect();
+    burst(r.left + r.width / 2, r.top + r.height / 2, "boom", 42);
+    castleEl.classList.remove("hit"); void castleEl.offsetWidth; castleEl.classList.add("hit");
+    float("🏰 城堡 -1！", r.left + r.width / 2, r.top - 8, "gold");
+  }
+  function fxWin() {
+    sfx("win"); shake("l");
+    castleEl.classList.add("broken");
+    const r = castleEl.getBoundingClientRect();
+    burst(r.left + r.width / 2, r.top + r.height / 2, "boom", 50);
+    burst(r.left + r.width / 2, r.top, "confetti", 90);
+    setTimeout(() => showOverlay(true), 1000);
+  }
+  function fxLose() {
+    sfx("lose"); shake("l"); hurtFlash();
+    setTimeout(() => showOverlay(false), 700);
+  }
+  function showOverlay(win) {
+    overlayEl.className = "show " + (win ? "win" : "lose");
+    $("ovtitle").textContent = win ? "🏰 城堡破碎，通关！" : "💥 城破了…";
+    $("ovsub").textContent = "得分 " + g.score + " · 消行 " + g.lines + " · 坚持 " + Math.floor(g.tick / 60) + " 秒";
+  }
+  $("ovbtn").onclick = () => location.reload();
+  $("restartbtn").onclick = () => location.reload();
+  $("mutebtn").onclick = () => { muted = !muted; $("mutebtn").textContent = muted ? "🔇" : "🔊"; };
+
+  window.GameAPI = {
+    left:   () => withSnap(() => applyAction(g, "L")),
+    right:  () => withSnap(() => applyAction(g, "R")),
+    rotate: () => withSnap(() => applyAction(g, "U")),
+    soft:   () => withSnap(() => applyAction(g, "D")),
+    hard:   () => { flagHard = true; withSnap(() => applyAction(g, "H")); flagHard = false; },
+    pick:   i => withSnap(() => pickBelt(g, i)),
+    merge:  i => withSnap(() => mergeAt(g, i)),
+    state:  () => g
+  };
+
+  /* ---------- 棋盘渲染（仅变化的格子更新 class） ---------- */
   const cellEls = [];
   for (let i = 0; i < CFG.rows * CFG.cols; i++) {
     const d = document.createElement("div");
     boardEl.appendChild(d); cellEls.push(d);
   }
-
-  const CLS = { 0: "", 1: "f", 2: "g", 3: "b", 4: "s", 9: "a" };
+  const CLS = ["", "c1", "c2", "c3", "c4"];
   function render() {
     const grid = g.board.map(r => r.slice());
     if (g.active) {
-      SHAPES[g.active.s][g.active.r].forEach(c => {
-        const x = g.active.x + c[0], y = g.active.y + c[1];
-        if (y >= 0 && y < CFG.rows) grid[y][x] = 9;
+      const p = g.active;
+      let gy = p.y;
+      while (fits(g, { s: p.s, m: p.m, r: p.r, x: p.x, y: gy + 1 })) gy++;
+      if (gy > p.y) SHAPES[p.s][p.r].forEach(c => {
+        const x = p.x + c[0], y = gy + c[1];
+        if (y >= 0) grid[y][x] = "G" + p.s;
+      });
+      SHAPES[p.s][p.r].forEach(c => {
+        const x = p.x + c[0], y = p.y + c[1];
+        if (y >= 0) grid[y][x] = "P" + p.s + p.m;
       });
     }
     for (let y = 0; y < CFG.rows; y++) for (let x = 0; x < CFG.cols; x++) {
-      cellEls[y * CFG.cols + x].className = CLS[grid[y][x]];
+      const v = grid[y][x];
+      const cl = typeof v === "string"
+        ? (v[0] === "P" ? "pc p" + v[1] + " pm" + v[2] : "gh g" + v[1])
+        : CLS[v];
+      const el = cellEls[y * CFG.cols + x];
+      if (el._cl !== cl) { el._cl = cl; el.className = cl; }
     }
-    renderBelt();
-    document.getElementById("queue").textContent =
-      g.active ? "下落中：" + NAMES[g.active.s] + MATS[g.active.m] : "点传送带上的方块出战";
-    let goblinRows = 0;
-    for (let y = CFG.rows - 1; y >= 0 && g.board[y][0] === 3; y--) goblinRows++;
-    document.getElementById("hud").textContent =
-      "seed " + g.seedStr + "  分 " + g.score + "  行 " + g.lines +
-      "  哥布林 " + goblinRows + " 层  下一波 " + Math.ceil((CFG.goblinPeriod - g.goblinT) / 60) + "s" +
-      "\n敌方城堡 " + g.castle + "/" + CFG.castleHP + " 血   我方城墙 " + g.hp + "/" + CFG.playerHP + " 血" +
-      (g.over ? (g.win ? "\n== 城堡破碎，通关！ ==" : "\n== 城破了 ==") : "");
+    let grows = 0;
+    for (let y = CFG.rows - 1; y >= 0 && g.board[y][0] === 3; y--) grows++;
+    boardEl.classList.toggle("hasgob", grows > 0);
+    beltEl.classList.toggle("busy", !!g.active || g.over);
+    renderBelt(); renderHud();
   }
 
+  /* ---------- HUD ---------- */
+  const cache = {};
+  function setTxt(id, t) { if (cache[id] !== t) { cache[id] = t; $(id).textContent = t; } }
+  function renderHud() {
+    const hk = g.hp + "/" + g.castle;
+    if (cache.pips !== hk) {
+      cache.pips = hk;
+      heartsEl.innerHTML = "";
+      for (let i = 0; i < CFG.playerHP; i++) {
+        const s = document.createElement("span");
+        s.className = "pip" + (i < g.hp ? "" : " off"); s.textContent = "❤️";
+        heartsEl.appendChild(s);
+      }
+      cpipsEl.innerHTML = "";
+      for (let i = 0; i < CFG.castleHP; i++) {
+        const s = document.createElement("span");
+        s.className = "pip" + (i < g.castle ? "" : " off"); s.textContent = "🚩";
+        cpipsEl.appendChild(s);
+      }
+    }
+    setTxt("score", "分 " + g.score + " · 行 " + g.lines);
+    const rem = Math.max(0, CFG.goblinPeriod - g.goblinT);
+    fuseFill.style.transform = "scaleX(" + g.goblinT / CFG.goblinPeriod + ")";
+    setTxt("fusetxt", "👺 下一波 " + Math.ceil(rem / 60) + "s");
+    fuseEl.classList.toggle("urgent", rem <= 300 && !g.over);
+    setTxt("status", g.over ? (g.win ? "🎉 已破城通关" : "💥 城墙已破")
+      : g.active ? "下落中：" + NAMES[g.active.s] + "·" + MATS[g.active.m]
+      : "👉 点传送带上的方块出战");
+  }
+
+  /* ---------- 传送带：槽位常驻，内容变化时局部重建并弹出动画 ---------- */
+  const slotEls = [];
+  for (let i = CFG.beltSlots - 1; i >= 0; i--) {
+    const d = document.createElement("div");
+    d.className = "slot";
+    const idx = i;
+    /* pointer capture 会把 pointerup 劫持回槽位，按钮 click 不可靠，
+       所以合成与出战走同一套指针判定（沿用素坯方案） */
+    d.onpointerdown = e => {
+      d._btn = !!(e.target.closest && e.target.closest("button"));
+      d._dn = true;
+      try { d.setPointerCapture(e.pointerId); } catch (err) {}
+    };
+    d.onpointerup = () => {
+      if (!d._dn) return;
+      const wasBtn = d._btn;
+      d._dn = false; d._btn = false;
+      if (wasBtn) window.GameAPI.merge(idx);
+      else window.GameAPI.pick(idx);
+    };
+    beltEl.appendChild(d);
+    slotEls[idx] = d;
+  }
+  let beltSig = null;
+  function miniHTML(it) {
+    const d = document.createElement("div");
+    d.className = "pv p" + it.s + (it.m ? " pm" + it.m : "");
+    SHAPES[it.s][0].forEach(c => {
+      const s = document.createElement("i");
+      s.style.gridColumn = (c[0] + 1);
+      s.style.gridRow = (c[1] + 1);
+      d.appendChild(s);
+    });
+    return d;
+  }
+  function renderBelt() {
+    const sig = g.belt.map(it => it ? it.s + "." + it.m : "_").join(",");
+    if (sig === beltSig) return;
+    const old = beltSig ? beltSig.split(",") : [];
+    const cur = sig.split(",");
+    beltSig = sig;
+    for (let i = 0; i < CFG.beltSlots; i++) {
+      const slot = slotEls[i], it = g.belt[i];
+      slot.className = "slot" + (it ? " m" + it.m : "");
+      slot.innerHTML = "";
+      if (!it) continue;
+      slot.appendChild(miniHTML(it));
+      const mt = document.createElement("div");
+      mt.className = "mt"; mt.textContent = MATS[it.m];
+      slot.appendChild(mt);
+      if (old[i] !== cur[i]) slot.classList.add("pop");
+      const info = mergeInfo(g, i);
+      if (info) {
+        const b = document.createElement("button");
+        b.className = "mergebtn";
+        b.textContent = "合" + info.take + "→" + MATS[info.mat];
+        slot.appendChild(b);
+      }
+    }
+  }
+
+  /* ---------- 输入：键盘 + 按钮 + 触屏手势 ---------- */
+  function doAction(a) {
+    if (a === "H") window.GameAPI.hard();
+    else withSnap(() => applyAction(g, a));
+  }
   document.addEventListener("keydown", e => {
     const map = { ArrowLeft: "L", ArrowRight: "R", ArrowUp: "U", ArrowDown: "D", " ": "H" };
-    if (map[e.key] !== undefined) { e.preventDefault(); applyAction(g, map[e.key]); }
+    if (map[e.key] !== undefined) { e.preventDefault(); doAction(map[e.key]); }
   });
-  document.querySelectorAll("button.op").forEach(b => b.onclick = () => applyAction(g, b.dataset.a));
+  document.querySelectorAll("button.op").forEach(b => b.onclick = () => doAction(b.dataset.a));
 
+  let gst = null;
+  stageEl.addEventListener("pointerdown", e => {
+    if (e.pointerType === "mouse") return;
+    gst = { sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t: performance.now(), ax: 0, ay: 0 };
+    try { stageEl.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  stageEl.addEventListener("pointermove", e => {
+    if (!gst) return;
+    const cw = boardEl.getBoundingClientRect().width / CFG.cols;
+    gst.ax += e.clientX - gst.lx; gst.ay += e.clientY - gst.ly;
+    gst.lx = e.clientX; gst.ly = e.clientY;
+    while (gst.ax > cw) { gst.ax -= cw; window.GameAPI.right(); }
+    while (gst.ax < -cw) { gst.ax += cw; window.GameAPI.left(); }
+    while (gst.ay > cw) { gst.ay -= cw; window.GameAPI.soft(); }
+  });
+  stageEl.addEventListener("pointerup", e => {
+    if (!gst) return;
+    const dt = performance.now() - gst.t;
+    const dx = e.clientX - gst.sx, dy = e.clientY - gst.sy;
+    gst = null;
+    if (dt < 260 && Math.abs(dx) < 12 && Math.abs(dy) < 12) window.GameAPI.rotate();
+    else if (dt < 350 && dy > 64 && Math.abs(dy) > Math.abs(dx) * 1.4) window.GameAPI.hard();
+  });
+  stageEl.addEventListener("pointercancel", () => { gst = null; });
+
+  /* ---------- 主循环 ---------- */
   const stepMs = 1000 / 60;
   let acc = 0, last = performance.now();
   function frame(now) {
     acc += now - last; last = now;
     if (acc > 500) acc = 500;
-    while (acc >= stepMs) { tickOnce(g); acc -= stepMs; }
+    while (acc >= stepMs) { withSnap(() => tickOnce(g)); acc -= stepMs; }
     render();
+    stepFx(now);
     requestAnimationFrame(frame);
   }
+  render();
   requestAnimationFrame(frame);
 })();
 </script>
