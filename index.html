@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>哥布林堵城 · 素坯</title>
+<style>
+/* 故意零美术：功能性样式，等待翻新 */
+body { font-family: monospace; background:#eee; color:#111; margin:8px; }
+#layout { display:flex; gap:12px; flex-wrap:wrap; }
+#board { display:grid; grid-template-columns:repeat(10,22px); grid-auto-rows:22px; border:2px solid #333; width:max-content; }
+#board div { border:1px solid #ccc; box-sizing:border-box; }
+#board div.f { background:#888; }
+#board div.g { background:#ca0; }
+#board div.s { background:#bcc; }
+#board div.b { background:#844; }
+#board div.a { background:#444; }
+#belt { display:flex; gap:4px; margin-bottom:8px; align-items:flex-start; }
+.slot { width:56px; height:72px; border:1px dashed #999; text-align:center; cursor:pointer; background:#fff; touch-action:none; user-select:none; }
+.slot .nm { font-size:20px; line-height:44px; pointer-events:none; }
+.slot .mt { font-size:11px; pointer-events:none; }
+.slot.m1 { background:#ddd; }
+.slot.m2 { background:#eec; }
+.mergebtn { font-size:11px; width:100%; }
+#queue { display:flex; gap:4px; margin-bottom:8px; }
+#hud { font-size:13px; white-space:pre; margin-bottom:6px; }
+#report { white-space:pre; background:#fff; border:1px solid #333; padding:8px; display:none; }
+button.op { margin:2px; padding:6px 10px; }
+</style>
+</head>
+<body>
+<script id="game-core">
+/* ============================================================
+   GAME CORE —— 逻辑封条区。本 script 块内任何字符不得修改。
+   验收方式见 AGENTS.md：autoplay 报告必须与 baseline.md 一致。
+   ============================================================ */
+"use strict";
+const CFG = { cols:10, rows:20, beltSlots:8, beltPeriod:45,
+              gravityPeriod:48, goblinPeriod:1500, silverDelay:900,
+              castleHP:3, playerHP:3, totalTicks:12000 };
+const NAMES = ["I","O","T","S","Z","J","L"];
+const SHAPES = [
+  [ [[0,1],[1,1],[2,1],[3,1]], [[2,0],[2,1],[2,2],[2,3]], [[0,2],[1,2],[2,2],[3,2]], [[1,0],[1,1],[1,2],[1,3]] ],
+  [ [[1,0],[2,0],[1,1],[2,1]], [[1,0],[2,0],[1,1],[2,1]], [[1,0],[2,0],[1,1],[2,1]], [[1,0],[2,0],[1,1],[2,1]] ],
+  [ [[1,0],[0,1],[1,1],[2,1]], [[1,0],[1,1],[2,1],[1,2]], [[0,1],[1,1],[2,1],[1,2]], [[1,0],[0,1],[1,1],[1,2]] ],
+  [ [[1,0],[2,0],[0,1],[1,1]], [[1,0],[1,1],[2,1],[2,2]], [[1,1],[2,1],[0,2],[1,2]], [[0,0],[0,1],[1,1],[1,2]] ],
+  [ [[0,0],[1,0],[1,1],[2,1]], [[2,0],[1,1],[2,1],[1,2]], [[0,1],[1,1],[1,2],[2,2]], [[1,0],[0,1],[1,1],[0,2]] ],
+  [ [[0,0],[0,1],[1,1],[2,1]], [[1,0],[2,0],[1,1],[1,2]], [[0,1],[1,1],[2,1],[2,2]], [[1,0],[1,1],[0,2],[1,2]] ],
+  [ [[2,0],[0,1],[1,1],[2,1]], [[1,0],[1,1],[1,2],[2,2]], [[0,1],[1,1],[2,1],[0,2]], [[0,0],[1,0],[1,1],[1,2]] ]
+];
+const MATS = ["普","银","金"];
+/* 盘面格值：0 空，1 普通，2 金格，3 哥布林，4 银格 */
+
+function fnv1a(str, h) {
+  h = h >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h >>> 0;
+}
+function seedFrom(str) { return fnv1a(String(str), 2166136261); }
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function newGame(seedStr) {
+  return {
+    seedStr: String(seedStr),
+    rng: mulberry32(seedFrom(seedStr)),
+    tick: 0, over: false, win: false, score: 0, lines: 0, goblinT: 0,
+    castle: CFG.castleHP, hp: CFG.playerHP,
+    board: Array.from({length: CFG.rows}, () => Array(CFG.cols).fill(0)),
+    belt: Array(CFG.beltSlots).fill(null),
+    active: null, pieceId: 0,
+    hash: 2166136261,
+    n: { rngDraws:0, spawns:0, picks:0,
+         mergeSilver:0, mergeGold:0, goblinRise:0, goblinKill:0, silverDelays:0,
+         castleHit:0, playerHit:0,
+         locks:0, clears1:0, clears2:0, clears3:0, clears4:0 }
+  };
+}
+
+function ev(g, tag) { g.hash = fnv1a(g.tick + ":" + tag, g.hash); }
+function boardStr(g) { return g.board.map(r => r.join("")).join("|"); }
+function drawShape(g) { g.n.rngDraws++; return Math.floor(g.rng() * 7); }
+
+/* 传送带每拍逐格前进：槽 0 是队首，堵住则后方逐格排队；入口有空即补新块 */
+function beltTick(g) {
+  for (let i = 1; i < CFG.beltSlots; i++) {
+    if (g.belt[i] && !g.belt[i-1]) { g.belt[i-1] = g.belt[i]; g.belt[i] = null; }
+  }
+  if (!g.belt[CFG.beltSlots-1]) {
+    const s = drawShape(g);
+    g.belt[CFG.beltSlots-1] = { s: s, m: 0 };
+    g.n.spawns++; ev(g, "spawn:" + s);
+  }
+}
+
+/* 出战：从传送带选一块直接开始下落；场上已有下落块时无效 */
+function pickBelt(g, i) {
+  if (g.over || g.active) return false;
+  if (i < 0 || i >= CFG.beltSlots || !g.belt[i]) return false;
+  const it = g.belt[i];
+  const p = { s: it.s, m: it.m, r: 0, x: 3, y: 0 };
+  if (!fits(g, p)) { g.over = true; ev(g, "over:spawn"); return false; }
+  g.belt[i] = null;
+  g.pieceId++; g.n.picks++;
+  g.active = p; ev(g, "pick:" + i + ">" + p.s + "," + p.m);
+  return true;
+}
+
+/* 合成：从槽 i 起连续同形状同材质。3×普→金；2×普→银；2×银→金。金不可再合。 */
+function mergeInfo(g, i) {
+  const a = g.belt[i], b = g.belt[i+1];
+  if (!a || !b || a.s !== b.s || a.m !== b.m || a.m === 2) return null;
+  const c = g.belt[i+2];
+  if (a.m === 0 && c && c.s === a.s && c.m === a.m) return { take: 3, mat: 2 };
+  return { take: 2, mat: a.m === 0 ? 1 : 2 };
+}
+function mergeAt(g, i) {
+  if (g.over) return false;
+  const info = mergeInfo(g, i);
+  if (!info) return false;
+  g.belt[i] = { s: g.belt[i].s, m: info.mat };
+  for (let k = 1; k < info.take; k++) g.belt[i+k] = null;
+  if (info.mat === 1) g.n.mergeSilver++; else g.n.mergeGold++;
+  ev(g, "merge:" + i + ">" + info.mat);
+  return true;
+}
+
+function cells(p) { return SHAPES[p.s][p.r].map(c => [p.x + c[0], p.y + c[1]]); }
+function fits(g, p) {
+  return cells(p).every(c =>
+    c[0] >= 0 && c[0] < CFG.cols && c[1] < CFG.rows && (c[1] < 0 || !g.board[c[1]][c[0]]));
+}
+
+/* 哥布林层从底部上顶；没有空间上顶时改为直击玩家 */
+function riseGoblin(g) {
+  g.goblinT = 0;
+  if (g.board[0].some(v => v)) {
+    g.hp--; g.n.playerHit++; ev(g, "hit:" + g.hp);
+    if (g.hp <= 0) { g.over = true; ev(g, "over:hp"); }
+    return;
+  }
+  g.board.shift();
+  g.board.push(Array(CFG.cols).fill(3));
+  g.n.goblinRise++; ev(g, "rise");
+  if (g.active && !fits(g, g.active)) {
+    let p = { ...g.active, y: g.active.y - 1 };
+    if (fits(g, p)) g.active = p;
+    else { g.over = true; ev(g, "over:crush"); }
+  }
+}
+
+/* 砸层：有哥布林层砸层；层清空后伤害直达城堡，血清空即通关 */
+function killGoblin(g, k) {
+  for (; k > 0 && !g.over; k--) {
+    let idx = -1;
+    for (let y = CFG.rows - 1; y >= 0; y--) if (g.board[y][0] === 3) { idx = y; break; }
+    if (idx < 0) {
+      g.castle--; g.n.castleHit++; g.score += 300; ev(g, "castle:" + g.castle);
+      if (g.castle <= 0) { g.win = true; g.over = true; ev(g, "win"); }
+      continue;
+    }
+    g.board.splice(idx, 1);
+    g.board.unshift(Array(CFG.cols).fill(0));
+    g.n.goblinKill++; g.score += 150; ev(g, "kill");
+  }
+}
+
+function tryMove(g, dx, dy) {
+  if (!g.active) return false;
+  const p = { ...g.active, x: g.active.x + dx, y: g.active.y + dy };
+  if (fits(g, p)) { g.active = p; return true; }
+  return false;
+}
+function rotate(g) {
+  if (!g.active) return false;
+  for (const dx of [0, -1, 1]) {
+    const p = { ...g.active, r: (g.active.r + 1) % 4, x: g.active.x + dx };
+    if (fits(g, p)) { g.active = p; ev(g, "rot"); return true; }
+  }
+  return false;
+}
+function softDrop(g) { if (tryMove(g, 0, 1)) { g.score += 1; return true; } lockPiece(g); return false; }
+function hardDrop(g) {
+  if (!g.active) return;
+  let n = 0;
+  while (tryMove(g, 0, 1)) n++;
+  g.score += 2 * n;
+  lockPiece(g);
+}
+
+function lockPiece(g) {
+  const p = g.active;
+  if (!p) return;
+  const val = p.m === 2 ? 2 : p.m === 1 ? 4 : 1;
+  cells(p).filter(c => c[1] >= 0).forEach(c => { g.board[c[1]][c[0]] = val; });
+  g.n.locks++;
+  /* 可消行：填满且不含哥布林格 */
+  let full = [];
+  for (let y = 0; y < CFG.rows; y++)
+    if (g.board[y].every(v => v === 1 || v === 2 || v === 4)) full.push(y);
+  let kills = 0;
+  if (full.length) {
+    if (full.some(y => g.board[y].includes(4))) { /* 银格行被消除：计时回拨 */
+      g.goblinT = Math.max(0, g.goblinT - CFG.silverDelay);
+      g.n.silverDelays++; ev(g, "delay");
+    }
+    kills += full.filter(y => g.board[y].includes(2)).length; /* 金格弹药 */
+    if (p.m === 2) kills += 1; /* 金块直接消行：合计 2 层 */
+    if (p.m === 1) kills += 1; /* 银块直接消行：额外 1 层 */
+    full.forEach(y => { g.board.splice(y, 1); g.board.unshift(Array(CFG.cols).fill(0)); });
+    g.lines += full.length;
+    g.score += [0, 100, 300, 500, 800][full.length] || 800;
+    g.n["clears" + Math.min(full.length, 4)]++;
+    ev(g, "clear:" + full.length);
+  }
+  if (kills) killGoblin(g, kills);
+  ev(g, "lock:" + boardStr(g));
+  g.active = null;
+}
+
+function tickOnce(g) {
+  if (g.over) return;
+  g.tick++;
+  g.goblinT++;
+  if (g.goblinT >= CFG.goblinPeriod) riseGoblin(g);
+  if (g.over) return;
+  if (g.tick % CFG.beltPeriod === 0) beltTick(g);
+  if (g.active && g.tick % CFG.gravityPeriod === 0) {
+    if (!tryMove(g, 0, 1)) lockPiece(g);
+  }
+}
+
+function applyAction(g, a, arg) {
+  if (g.over) return;
+  switch (a) {
+    case "L": tryMove(g, -1, 0); break;
+    case "R": tryMove(g, 1, 0); break;
+    case "U": rotate(g); break;
+    case "D": if (g.active) softDrop(g); break;
+    case "H": hardDrop(g); break;
+    case "C": pickBelt(g, arg); break;
+    case "M": mergeAt(g, arg); break;
+  }
+}
+
+/* 确定性演示机器人：只读游戏状态、按固定策略行动，同 seed 结果永远一致 */
+function planPlacement(g) {
+  const heights = b => {
+    const h = Array(CFG.cols).fill(0);
+    for (let x = 0; x < CFG.cols; x++)
+      for (let y = 0; y < CFG.rows; y++) if (b[y][x]) { h[x] = CFG.rows - y; break; }
+    return h;
+  };
+  let best = null;
+  for (let r = 0; r < 4; r++) {
+    for (let x = -2; x < CFG.cols; x++) {
+      let p = { s: g.active.s, m: 0, r: r, x: x, y: 0 };
+      if (!fits(g, p)) continue;
+      while (fits(g, { ...p, y: p.y + 1 })) p = { ...p, y: p.y + 1 };
+      const b = g.board.map(row => row.slice());
+      cells(p).forEach(c => { if (c[1] >= 0) b[c[1]][c[0]] = 1; });
+      let full = 0;
+      for (let y = 0; y < CFG.rows; y++) if (b[y].every(v => v === 1 || v === 2 || v === 4)) full++;
+      const h = heights(b);
+      let holes = 0, agg = 0, bump = 0;
+      for (let x2 = 0; x2 < CFG.cols; x2++) {
+        agg += h[x2];
+        if (x2 > 0) bump += Math.abs(h[x2] - h[x2 - 1]);
+        for (let y = CFG.rows - h[x2]; y < CFG.rows; y++) if (!b[y][x2]) holes++;
+      }
+      const cost = holes * 80 + agg * 2 + bump - full * 200;
+      if (!best || cost < best.cost) best = { cost, r, x };
+    }
+  }
+  return best;
+}
+
+function runAutoplay(seedStr) {
+  const g = newGame(seedStr);
+  const bot = { planId: -1, plan: null, tries: 0 };
+  for (let t = 0; t < CFG.totalTicks && !g.over; t++) {
+    if (g.tick % 24 === 0) {
+      let acted = false;
+      /* 先找能出金的合成，再找任意合成 */
+      for (let pass = 0; pass < 2 && !acted; pass++) {
+        for (let i = 0; i < CFG.beltSlots - 1 && !acted; i++) {
+          const info = mergeInfo(g, i);
+          if (info && (pass === 1 || info.mat === 2)) { applyAction(g, "M", i); acted = true; }
+        }
+      }
+      /* 出战：优先银金；其次挑出 A X A 中间的杂牌做对子；否则积压到 5 块拿队首 */
+      if (!acted && !g.active) {
+        let pick = -1;
+        for (let i = 0; i < CFG.beltSlots; i++)
+          if (g.belt[i] && g.belt[i].m > 0) { pick = i; break; }
+        if (pick < 0) {
+          for (let i = 0; i < CFG.beltSlots - 2; i++) {
+            const a = g.belt[i], x = g.belt[i+1], c = g.belt[i+2];
+            if (a && x && c && a.s === c.s && a.m === c.m && a.m < 2 &&
+                (x.s !== a.s || x.m !== a.m) && x.m === 0) { pick = i + 1; break; }
+          }
+        }
+        if (pick < 0 && g.belt.filter(Boolean).length >= 5) {
+          for (let i = 0; i < CFG.beltSlots; i++) if (g.belt[i]) { pick = i; break; }
+        }
+        if (pick >= 0) { applyAction(g, "C", pick); acted = true; }
+      }
+      if (!acted && g.active) {
+        if (bot.planId !== g.pieceId) {
+          bot.plan = planPlacement(g); bot.planId = g.pieceId; bot.tries = 0;
+        }
+        bot.tries++;
+        const pl = bot.plan;
+        if (!pl || bot.tries > 24) { applyAction(g, "H"); }
+        else if (g.active.r !== pl.r) { applyAction(g, "U"); }
+        else if (g.active.x < pl.x) { applyAction(g, "R"); }
+        else if (g.active.x > pl.x) { applyAction(g, "L"); }
+        else { applyAction(g, "H"); }
+      }
+    }
+    tickOnce(g);
+  }
+  return report(g);
+}
+
+function report(g) {
+  const n = g.n;
+  return [
+    "SEAL-REPORT v5",
+    "seed=" + g.seedStr,
+    "tick=" + g.tick + " over=" + g.over + " win=" + g.win,
+    "score=" + g.score + " lines=" + g.lines + " castle=" + g.castle + " hp=" + g.hp,
+    "rngDraws=" + n.rngDraws + " spawns=" + n.spawns + " picks=" + n.picks,
+    "mergeSilver=" + n.mergeSilver + " mergeGold=" + n.mergeGold,
+    "goblinRise=" + n.goblinRise + " goblinKill=" + n.goblinKill + " silverDelays=" + n.silverDelays +
+      " castleHit=" + n.castleHit + " playerHit=" + n.playerHit,
+    "locks=" + n.locks + " clears=" + n.clears1 + "/" + n.clears2 + "/" + n.clears3 + "/" + n.clears4,
+    "hash=" + ("00000000" + g.hash.toString(16)).slice(-8)
+  ].join("\n");
+}
+
+if (typeof module !== "undefined") module.exports = { newGame, tickOnce, applyAction, pickBelt, mergeAt, mergeInfo, runAutoplay, CFG, NAMES };
+/* ========================= 封条区结束 ========================= */
+</script>
+
+<h3>哥布林堵城（素坯）</h3>
+<div id="belt"></div>
+<div id="queue"></div>
+<div id="hud"></div>
+<div id="layout">
+  <div id="board"></div>
+  <div>
+    <div>
+      <button class="op" data-a="L">←</button>
+      <button class="op" data-a="R">→</button>
+      <button class="op" data-a="U">旋转</button>
+      <button class="op" data-a="D">软降</button>
+      <button class="op" data-a="H">硬降</button>
+    </div>
+    <p style="max-width:320px;font-size:12px">
+      底下是哥布林城堡（3 血）。哥布林层每 25 秒从底部上顶一层当城堡的盾；
+      没有空间上顶时改为直击你的城墙（3 血），血掉完你输。
+      砸层效果在哥布林层清空时会直接伤害城堡——城堡血清空，破城通关。
+      传送带左进右出，到头排队等待，<b>不会自动下落，也不能丢弃</b>：
+      <b>点击方块 = 出战开始下落</b>；场上有下落块时不能再选。
+      相邻两个同形状可合成<b>银</b>，三个合成<b>金</b>，两个银也可合成金。
+      银块与金块落地后，格子作为银格/金格留在墙里：含银格的行被消除时哥布林计时回拨 15 秒，
+      含金格的行被消除时砸 1 层。银块落地直接消行额外砸 1 层，金块则合计砸 2 层。
+      键盘：←→↓，↑旋转，空格硬降。
+    </p>
+  </div>
+</div>
+<pre id="report"></pre>
+
+<script id="game-ui">
+/* ============================================================
+   UI 层 —— 翻新自由区。可整体重写，但只能通过 window.GameAPI
+   驱动游戏，不得触碰封条区内部状态语义。
+   ============================================================ */
+"use strict";
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const seed = qs.get("seed") || "PLAY01";
+
+  if (qs.get("autoplay") === "1") {
+    const el = document.getElementById("report");
+    el.style.display = "block";
+    el.textContent = runAutoplay(seed);
+    return;
+  }
+
+  const g = newGame(seed);
+  window.GameAPI = {
+    left: () => applyAction(g, "L"), right: () => applyAction(g, "R"),
+    rotate: () => applyAction(g, "U"), soft: () => applyAction(g, "D"),
+    hard: () => applyAction(g, "H"),
+    pick: i => pickBelt(g, i), merge: i => mergeAt(g, i),
+    state: () => g
+  };
+
+  /* 传送带 DOM 只在内容变化时重建，否则指针目标会被每帧重建摧毁 */
+  let beltSig = null;
+  function renderBelt() {
+    const sig = g.belt.map(it => it ? it.s + "." + it.m : "_").join(",");
+    if (sig === beltSig) return;
+    beltSig = sig;
+    const beltEl = document.getElementById("belt");
+    beltEl.innerHTML = "";
+    for (let i = CFG.beltSlots - 1; i >= 0; i--) {
+      const it = g.belt[i];
+      const d = document.createElement("div");
+      d.className = "slot" + (it ? " m" + it.m : "");
+      if (it) {
+        d.innerHTML = '<div class="nm">' + NAMES[it.s] + '</div><div class="mt">' + MATS[it.m] + "</div>";
+        /* 点方块 = 出战；点合成按钮 = 合成。
+           pointer capture 会把 pointerup 劫持回槽位，按钮 click 不可靠，
+           所以合成也走同一套指针判定。 */
+        d.onpointerdown = e => {
+          d._btn = e.target.tagName === "BUTTON";
+          d._dn = true;
+          d.setPointerCapture(e.pointerId);
+        };
+        d.onpointerup = () => {
+          if (!d._dn) return;
+          const wasBtn = d._btn;
+          d._dn = false; d._btn = false;
+          if (wasBtn) mergeAt(g, i);
+          else pickBelt(g, i);
+        };
+        const info = mergeInfo(g, i);
+        if (info) {
+          const b = document.createElement("button");
+          b.className = "mergebtn";
+          b.textContent = "合" + info.take + "→" + MATS[info.mat];
+          d.appendChild(b);
+        }
+      }
+      beltEl.appendChild(d);
+    }
+  }
+
+  const boardEl = document.getElementById("board");
+  const cellEls = [];
+  for (let i = 0; i < CFG.rows * CFG.cols; i++) {
+    const d = document.createElement("div");
+    boardEl.appendChild(d); cellEls.push(d);
+  }
+
+  const CLS = { 0: "", 1: "f", 2: "g", 3: "b", 4: "s", 9: "a" };
+  function render() {
+    const grid = g.board.map(r => r.slice());
+    if (g.active) {
+      SHAPES[g.active.s][g.active.r].forEach(c => {
+        const x = g.active.x + c[0], y = g.active.y + c[1];
+        if (y >= 0 && y < CFG.rows) grid[y][x] = 9;
+      });
+    }
+    for (let y = 0; y < CFG.rows; y++) for (let x = 0; x < CFG.cols; x++) {
+      cellEls[y * CFG.cols + x].className = CLS[grid[y][x]];
+    }
+    renderBelt();
+    document.getElementById("queue").textContent =
+      g.active ? "下落中：" + NAMES[g.active.s] + MATS[g.active.m] : "点传送带上的方块出战";
+    let goblinRows = 0;
+    for (let y = CFG.rows - 1; y >= 0 && g.board[y][0] === 3; y--) goblinRows++;
+    document.getElementById("hud").textContent =
+      "seed " + g.seedStr + "  分 " + g.score + "  行 " + g.lines +
+      "  哥布林 " + goblinRows + " 层  下一波 " + Math.ceil((CFG.goblinPeriod - g.goblinT) / 60) + "s" +
+      "\n敌方城堡 " + g.castle + "/" + CFG.castleHP + " 血   我方城墙 " + g.hp + "/" + CFG.playerHP + " 血" +
+      (g.over ? (g.win ? "\n== 城堡破碎，通关！ ==" : "\n== 城破了 ==") : "");
+  }
+
+  document.addEventListener("keydown", e => {
+    const map = { ArrowLeft: "L", ArrowRight: "R", ArrowUp: "U", ArrowDown: "D", " ": "H" };
+    if (map[e.key] !== undefined) { e.preventDefault(); applyAction(g, map[e.key]); }
+  });
+  document.querySelectorAll("button.op").forEach(b => b.onclick = () => applyAction(g, b.dataset.a));
+
+  const stepMs = 1000 / 60;
+  let acc = 0, last = performance.now();
+  function frame(now) {
+    acc += now - last; last = now;
+    if (acc > 500) acc = 500;
+    while (acc >= stepMs) { tickOnce(g); acc -= stepMs; }
+    render();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
