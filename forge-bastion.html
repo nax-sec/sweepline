@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>深网防线 · NETWATCH</title>
+<style>
+/* 零外部依赖：全部 CSS + Canvas 绘制 */
+html,body{ margin:0; padding:0; height:100%; }
+body{
+  background:#05060b;
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  overflow:hidden; user-select:none; -webkit-user-select:none; overscroll-behavior:none;
+  -webkit-tap-highlight-color:transparent;
+}
+#cv{ position:fixed; inset:0; display:block; touch-action:none; }
+#help{
+  position:fixed; inset:0; z-index:10; display:none;
+  align-items:center; justify-content:center;
+  background:rgba(5,4,10,.88); backdrop-filter:blur(5px);
+}
+#help.show{ display:flex; }
+#helpcard{
+  width:min(340px, 88vw); max-height:86vh; overflow:auto;
+  background:linear-gradient(180deg,#141a28,#0b0e16);
+  border:1px solid rgba(125,211,252,.35); border-radius:16px; padding:20px 22px;
+  color:#d8d2c0; font-size:13px; line-height:1.8;
+  box-shadow:0 12px 48px rgba(0,0,0,.6);
+}
+#helpcard h1{ font-family:"Songti SC","STSong","Noto Serif CJK SC","SimSun",serif;
+  font-size:24px; letter-spacing:6px; color:#e8c987; margin:0 0 4px; text-align:center; }
+#helpcard .sub{ font-size:11px; color:#8b84a5; text-align:center; margin-bottom:12px; }
+#helpcard b.m{ color:#8fe3f2; } #helpcard b.g{ color:#ffd76a; } #helpcard b.e{ color:#a4e34d; } #helpcard b.w{ color:#ff8a7a; }
+#helpcard .keys{ font-size:11px; color:#9b94b2; border-top:1px solid #35304a; margin-top:10px; padding-top:8px; }
+#startbtn{
+  display:block; width:100%; margin-top:14px; padding:12px 0;
+  font-size:17px; font-weight:800; letter-spacing:4px; color:#3a2405;
+  background:linear-gradient(180deg,#ffd076,#e08a2e); border:1px solid #7a4d12; border-radius:12px;
+  cursor:pointer;
+}
+#startbtn:active{ filter:brightness(1.15); }
+#themeToggle{ display:block; text-align:center; margin-top:10px; font-size:11px;
+  color:#7dd3fc; cursor:pointer; text-decoration:underline; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="help"><div id="helpcard"></div></div>
+
+<script>
+"use strict";
+/* ============================================================
+   熔炉防线 / 深网防线 —— 逻辑层（无 DOM，主题无关）
+   四条核心循环：传送带手牌 / 两级材质合成 / 威胁计时 / 攻城胜负。
+   桌面形态：10×14 无重力锻造盘，行或列铺满即锻打消除。
+   ============================================================ */
+
+/* ---------------- 配置 ---------------- */
+const COLS = 10, ROWS = 14;
+const BELT_N = 8;
+const BELT_PERIOD0 = 3.2, BELT_PERIOD_MIN = 2.0, BELT_RAMP = 0.004; // 传送带随时间提速
+const DIG_PERIOD = 28, REWIND = 15;      // 挖掘周期 / 秘银回拨秒数
+const CASTLE_HP = 3, WALL_HP = 3;
+const MELT_COST = 3;                      // 熔毁令挖掘进度 +3 秒
+const CLEAR_SCORE = [0, 100, 300, 600, 1000, 1500, 2100];
+
+/* 盘面格值：0 空，1 赤钢（普通），2 精金，3 哥布林岩层，4 秘银 */
+
+/* 棋子几何：2~4 格小件，决策快、对子常见 */
+const SHAPE_DEFS = [
+  { id: "P2", name: "二连", w: 3, cells: [[0,0],[1,0]] },
+  { id: "I3", name: "长三", w: 3, cells: [[0,0],[1,0],[2,0]] },
+  { id: "V3", name: "拐三", w: 2, cells: [[0,0],[0,1],[1,1]] },
+  { id: "I4", name: "长四", w: 2, cells: [[0,0],[1,0],[2,0],[3,0]] },
+  { id: "O4", name: "方四", w: 2, cells: [[0,0],[1,0],[0,1],[1,1]] },
+  { id: "T4", name: "丁四", w: 2, cells: [[0,0],[1,0],[2,0],[1,1]] },
+  { id: "S4", name: "蛇四", w: 1, cells: [[1,0],[2,0],[0,1],[1,1]] },
+  { id: "L4", name: "拐四", w: 1, cells: [[0,0],[0,1],[0,2],[1,2]] }
+];
+function normCells(cs) {
+  let mx = 99, my = 99;
+  cs.forEach(c => { mx = Math.min(mx, c[0]); my = Math.min(my, c[1]); });
+  return cs.map(c => [c[0] - mx, c[1] - my]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+}
+function rotsOf(cells) {
+  const out = [], seen = {};
+  let cur = normCells(cells);
+  for (let i = 0; i < 4; i++) {
+    const key = cur.map(c => c.join(",")).join(";");
+    if (!seen[key]) { seen[key] = 1; out.push(cur); }
+    cur = normCells(cur.map(c => [c[1], -c[0]]));
+  }
+  return out;
+}
+SHAPE_DEFS.forEach(s => {
+  s.rots = rotsOf(s.cells);
+  s.wds = s.rots.map(r => Math.max(...r.map(c => c[0])) + 1);
+  s.hts = s.rots.map(r => Math.max(...r.map(c => c[1])) + 1);
+});
+const SHAPE_IDX = {};
+SHAPE_DEFS.forEach((s, i) => SHAPE_IDX[s.id] = i);
+const SPAWN_BAG = [];
+SHAPE_DEFS.forEach((s, i) => { for (let k = 0; k < s.w; k++) SPAWN_BAG.push(i); });
+
+/* ---------------- 随机数（可复现种子） ---------------- */
+function fnv1a(str, h) {
+  h = h >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h >>> 0;
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ---------------- 状态 ---------------- */
+function newGame(seedStr) {
+  return {
+    seed: String(seedStr),
+    rng: mulberry32(fnv1a(String(seedStr), 2166136261)),
+    tick: 0, time: 0, over: false, win: false,
+    score: 0, lines: 0, combo: 0, bestCombo: 0,
+    castle: CASTLE_HP, wall: WALL_HP,
+    board: Array.from({ length: ROWS }, () => Array(COLS).fill(0)),
+    belt: Array(BELT_N).fill(null), beltT: 0,
+    hand: null,                       // { s, m, rot, gx, gy }
+    digT: 0,
+    nextId: 1,
+    ev: [],                           // 演出事件队列，表现层消费
+    n: { spawns: 0, picks: 0, mergeS: 0, mergeG: 0, melts: 0, places: 0,
+         clears: 0, rises: 0, smashes: 0, rewinds: 0, castleHit: 0, wallHit: 0 }
+  };
+}
+function ev(g, type, data) { g.ev.push(Object.assign({ type }, data)); }
+
+/* ---------------- 传送带 ---------------- */
+function beltPeriod(g) { return Math.max(BELT_PERIOD_MIN, BELT_PERIOD0 - g.time * BELT_RAMP); }
+function drawShapeIdx(g) {
+  /* 同模再铸：45% 概率复铸带上已有形状，让对子/三连自然出现（合成经济的引擎） */
+  const occ = g.belt.filter(Boolean);
+  if (occ.length && g.rng() < 0.45) return occ[(g.rng() * occ.length) | 0].s;
+  return SPAWN_BAG[(g.rng() * SPAWN_BAG.length) | 0];
+}
+function compressBelt(g) {
+  const items = g.belt.filter(Boolean);
+  for (let i = 0; i < BELT_N; i++) {
+    const it = items[i] || null;
+    if (g.belt[i] !== it) {
+      const oldIdx = it ? g.belt.indexOf(it) : -1;
+      g.belt[i] = it;
+      if (it && oldIdx > i) it.slide = (oldIdx - i);   // 向队首滑动动画量（槽位）
+    }
+  }
+}
+function beltSpawn(g) {
+  if (g.belt[BELT_N - 1]) return;
+  const s = drawShapeIdx(g);
+  g.belt[BELT_N - 1] = { s, m: 0, id: g.nextId++, slide: 1 };  // 从带尾滑入
+  g.n.spawns++;
+  ev(g, "spawn", { slot: BELT_N - 1 });
+  compressBelt(g);
+}
+function pick(g, i) {
+  if (g.over || g.hand || !g.belt[i]) return false;
+  const it = g.belt[i];
+  g.belt[i] = null;
+  g.hand = { s: it.s, m: it.m, rot: 0, gx: 3, gy: 4 };
+  g.n.picks++;
+  ev(g, "pick", { slot: i, s: it.s, m: it.m });
+  compressBelt(g);
+  return true;
+}
+function mergeInfo(g, i) {
+  const a = g.belt[i], b = g.belt[i + 1];
+  if (!a || !b || a.s !== b.s || a.m !== b.m || a.m === 2) return null;
+  const c = g.belt[i + 2];
+  if (a.m === 0 && c && c.s === a.s && c.m === 0) return { take: 3, mat: 2 };
+  return { take: 2, mat: a.m === 0 ? 1 : 2 };
+}
+function mergeAt(g, i) {
+  if (g.over) return false;
+  const info = mergeInfo(g, i);
+  if (!info) return false;
+  g.belt[i] = { s: g.belt[i].s, m: info.mat, id: g.nextId++, slide: 0 };
+  for (let k = 1; k < info.take; k++) g.belt[i + k] = null;
+  if (info.mat === 1) g.n.mergeS++; else g.n.mergeG++;
+  ev(g, "merge", { slot: i, mat: info.mat, take: info.take });
+  compressBelt(g);
+  return true;
+}
+
+/* ---------------- 放置与锻打 ---------------- */
+function fits(g, s, rot, gx, gy) {
+  return SHAPE_DEFS[s].rots[rot].every(c => {
+    const x = gx + c[0], y = gy + c[1];
+    return x >= 0 && x < COLS && y >= 0 && y < ROWS && !g.board[y][x];
+  });
+}
+function anyFit(g, s, m) {
+  for (let r = 0; r < SHAPE_DEFS[s].rots.length; r++)
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
+      if (fits(g, s, r, x, y)) return true;
+  return false;
+}
+function placeHand(g) {
+  if (g.over || !g.hand) return false;
+  const h = g.hand;
+  if (!fits(g, h.s, h.rot, h.gx, h.gy)) return false;
+  const val = h.m === 2 ? 2 : h.m === 1 ? 4 : 1;
+  const cs = SHAPE_DEFS[h.s].rots[h.rot].map(c => [h.gx + c[0], h.gy + c[1]]);
+  cs.forEach(c => { g.board[c[1]][c[0]] = val; });
+  g.score += cs.length;
+  g.n.places++;
+  ev(g, "place", { cells: cs, m: h.m });
+  g.hand = null;
+  resolveLines(g, h.m, cs);
+  return true;
+}
+function meltHand(g) {
+  if (g.over || !g.hand) return false;
+  g.hand = null;
+  g.digT = Math.min(DIG_PERIOD, g.digT + MELT_COST);
+  g.n.melts++;
+  ev(g, "melt", {});
+  return true;
+}
+function resolveLines(g, mat, placedCells) {
+  const rows = [], cols = [];
+  for (let y = 0; y < ROWS; y++)
+    if (g.board[y].every(v => v === 1 || v === 2 || v === 4)) rows.push(y);
+  for (let x = 0; x < COLS; x++) {
+    let full = true;
+    for (let y = 0; y < ROWS; y++) if (!(g.board[y][x] === 1 || g.board[y][x] === 2 || g.board[y][x] === 4)) { full = false; break; }
+    if (full) cols.push(x);
+  }
+  if (!rows.length && !cols.length) { g.combo = 0; return; }
+
+  const L = rows.length + cols.length;
+  let silverLine = false, goldLines = 0;
+  rows.forEach(y => {
+    if (g.board[y].includes(4)) silverLine = true;
+    if (g.board[y].includes(2)) goldLines++;
+  });
+  cols.forEach(x => {
+    let hasS = false, hasG = false;
+    for (let y = 0; y < ROWS; y++) { if (g.board[y][x] === 4) hasS = true; if (g.board[y][x] === 2) hasG = true; }
+    if (hasS) silverLine = true;
+    if (hasG) goldLines++;
+  });
+
+  rows.forEach(y => g.board[y].fill(0));
+  cols.forEach(x => { for (let y = 0; y < ROWS; y++) g.board[y][x] = 0; });
+
+  g.lines += L;
+  g.n.clears++;
+  g.combo++;
+  g.bestCombo = Math.max(g.bestCombo, g.combo);
+  g.score += (CLEAR_SCORE[Math.min(L, CLEAR_SCORE.length - 1)]) + 50 * (g.combo - 1);
+  ev(g, "clear", { rows, cols, combo: g.combo });
+
+  let kills = goldLines;
+  if (mat === 2) kills += 1;       // 精金件直接锻掉：合计 2 层
+  if (mat === 1) kills += 1;       // 秘银件直接锻掉：额外 1 层
+  if (silverLine) {
+    g.digT = Math.max(0, g.digT - REWIND);
+    g.n.rewinds++;
+    ev(g, "rewind", {});
+  }
+  if (kills) smash(g, kills);
+}
+
+/* ---------------- 砸层 / 攻城 ---------------- */
+function smash(g, k) {
+  for (; k > 0 && !g.over; k--) {
+    let idx = -1;
+    for (let y = ROWS - 1; y >= 0; y--) if (g.board[y].includes(3)) { idx = y; break; }
+    if (idx < 0) {
+      g.castle--; g.n.castleHit++; g.score += 300;
+      ev(g, "castle", { left: g.castle });
+      if (g.castle <= 0) { g.win = true; g.over = true; ev(g, "win", {}); }
+      continue;
+    }
+    g.board.splice(idx, 1);
+    g.board.unshift(Array(COLS).fill(0));
+    g.n.smashes++; g.score += 150;
+    ev(g, "smash", {});
+  }
+}
+
+/* ---------------- 哥布林上顶 ---------------- */
+function rise(g) {
+  g.digT = 0;
+  if (g.board[0].some(v => v)) {
+    g.wall--; g.n.wallHit++;
+    ev(g, "wall", { left: g.wall });
+    if (g.wall <= 0) { g.over = true; ev(g, "lose", {}); }
+    return;
+  }
+  g.board.shift();
+  g.board.push(Array(COLS).fill(3));
+  g.n.rises++;
+  ev(g, "rise", {});
+}
+
+/* ---------------- 主时钟 ---------------- */
+function tick(g, dt) {
+  if (g.over) return;
+  g.time += dt;
+  g.digT += dt;
+  if (g.digT >= DIG_PERIOD) rise(g);
+  if (g.over) return;
+  g.beltT += dt;
+  if (g.beltT >= beltPeriod(g)) { g.beltT = 0; beltSpawn(g); }
+}
+
+if (typeof module !== "undefined")
+  module.exports = { newGame, tick, pick, mergeAt, mergeInfo, placeHand, meltHand,
+                     fits, anyFit, smash, rise, compressBelt,
+                     SHAPE_DEFS, COLS, ROWS, BELT_N, DIG_PERIOD, REWIND };
+</script>
+
+<script>
+"use strict";
+/* ============================================================
+   表现层：THEME 主题系统（霓虹赛博 / 暗金锻造）+ 响应式布局。
+   ============================================================ */
+(function () {
+if (typeof module !== "undefined") return;   // node 环境只测逻辑
+
+/* ================= 主题定义 ================= */
+const HELP_FORGE = `
+  <h1>熔炉防线</h1>
+  <div class="sub">FORGE BASTION · 哥布林正从地底挖上来</div>
+  <p>你是地心熔炉要塞的锻造长。<b class="e">哥布林挖掘队</b>每 28 秒从底盘上顶一层岩层，挤占你的锻造台；台顶被占满时，它们直接凿穿你的<b class="w">城墙（3 血）</b>。把攻击砸进地底，摧毁<b class="e">哥布林王座（3 血）</b>即破城通关。</p>
+  <p>构件由<b>传送带</b>供应（8 槽，不可丢弃）：<b>点选构件 → 点锻造台放置</b>，放满任意<b>一整行或一整列</b>即锻打消除。手中同时只能拿一件。</p>
+  <p>相邻同形构件可回炉合成：<b>2 件 → <b class="m">秘银</b></b>，<b>3 件 → <b class="g">精金</b></b>，<b class="m">2 秘银</b>也可合成<b class="g">精金</b>。</p>
+  <p><b class="m">秘银</b>留在台中：含秘银的行/列被锻掉时，<b class="m">塌方回填</b>——挖掘计时回拨 15 秒；秘银件放下直接消行/列，额外砸 1 层。<br>
+  <b class="g">精金</b>是弹头：含精金的行/列被锻掉时砸 1 层；精金件放下直接消行/列，合计砸 2 层。<br>砸层先砸哥布林岩层；岩层清空后，砸击直达王座。</p>
+  <p>手中构件无处可放时，可<b>熔毁</b>（回炉，但挖掘进度 +3 秒）。</p>`;
+const HELP_CYBER = `
+  <h1>深网防线</h1>
+  <div class="sub">NETWATCH // 深网入侵进行中</div>
+  <p>你是数据要塞的守门人。<b class="e">深网病毒群</b>每 28 秒沿协议栈上涌一层，侵蚀你的机架；架顶被占满时，它们直接穿透你的<b class="w">防火墙（3 层）</b>。把反击流量砸进深网，让<b class="e">主脑 CORE（3 血）</b>宕机即通关。</p>
+  <p>数据包由<b>传送队列</b>供应（8 槽，不可丢弃）：<b>点取数据包 → 点机架部署</b>，写满任意<b>一整行或一整列</b>即同步消除。手中同时只能持有一个。</p>
+  <p>相邻同形数据包可编译：<b>2 个 → <b class="m">时序协议</b></b>，<b>3 个 → <b class="g">过载核心</b></b>，<b class="m">2 时序</b>也可编译成<b class="g">过载</b>。</p>
+  <p><b class="m">时序</b>留在机架：含时序的行/列同步时，<b class="m">入侵回滚</b> 15 秒；时序件放下直接同步，额外砸 1 层。<br>
+  <b class="g">过载</b>是 EMP：含过载的行/列同步时砸 1 层；过载件放下直接同步，合计砸 2 层。<br>砸层先清除病毒层；病毒清空后直击 CORE。</p>
+  <p>无处部署时可<b>丢包</b>（入侵进度 +3 秒）。</p>`;
+const HELP_KEYS = `<div class="keys">触屏：点选 → 拖动/点按放置 · 按钮旋转<br>桌面：鼠标拖动放置 · 右键/R 旋转 · 键盘 1-8 取件、方向键移动、回车放置、M 熔毁</div>`;
+
+const THEMES = {
+  forge: {
+    id: "forge", other: "cyber", otherName: "霓虹赛博",
+    doc: "熔炉防线 · Forge Bastion",
+    pal: {
+      skin: "forge",
+      brass: "#c9a35c", brassHi: "#e8c987", parch: "#d8d2c0", dim: "#7a7466",
+      panelFill: "#10141e", panelStroke: "#3d3423", iconStroke: "#4a3f28",
+      slotFill: "#10131d", slotEmpty: "#1e2534",
+      matStroke: [null, "#7fb8cc", "#d4a017"],
+      matText: [null, "#bfe6f2", "#ffd76a"],
+      fuseLo: "#3f6e1e", fuseHi: "#6ea828", fuseTxt: "#e8e4d0",
+      hot: "#e05a30",
+      boardFrame: "#141a26", boardBg: "#0b0e16",
+      threatGlow: "rgba(120,200,40,.22)",
+      square: false
+    },
+    str: {
+      title: "熔炉防线", sub: "FORGE BASTION",
+      wallLabel: "我方城墙", castleLabel: "魔物王座",
+      castleName: "魔物王座", castleDead: "王座已毁",
+      fuse: rem => "魔物挖掘 " + rem + "s",
+      matShort: ["", "·银", "·金"],
+      merge1: "⚙ 秘银淬成", merge2: "✨ 精金铸就！",
+      rewind: "⏪ 塌方回填 · 计时 -15s",
+      smash: "⚔ 砸层！", rise: "👺 哥布林上顶！",
+      wall: "💔 城墙被凿穿 -1", castleHit: "🏰 王座 -1！",
+      melt: "🔥 熔毁 · 挖掘 +3s",
+      btnMelt: "熔 毁", btnRot: "⟳ 旋转",
+      hintIdle: "点传送带取件 · 同形相邻可合成",
+      hintHold: "点锻造台放置 · 右键/R 旋转",
+      hintDead: "无处可放——熔毁或等上顶",
+      beltFull: "传送带已满！", beltFullV: "已满！", beltLabel: "传 送 带",
+      winTitle: "破 城 通 关", loseTitle: "城 墙 已 破",
+      helpHTML: HELP_FORGE + HELP_KEYS
+    }
+  },
+  cyber: {
+    id: "cyber", other: "forge", otherName: "暗金锻造",
+    doc: "深网防线 · NETWATCH",
+    pal: {
+      skin: "cyber",
+      brass: "#00c8e0", brassHi: "#7df3ff", parch: "#d4e4ea", dim: "#5f7a86",
+      panelFill: "#0a1018", panelStroke: "#134050", iconStroke: "#134050",
+      slotFill: "#0a121c", slotEmpty: "#12202e",
+      matStroke: [null, "#8fe3f2", "#ffb300"],
+      matText: [null, "#aef4ff", "#ffd76a"],
+      fuseLo: "#8f0e42", fuseHi: "#ff2e88", fuseTxt: "#ffe4f0",
+      hot: "#ff2e88",
+      boardFrame: "#0c1420", boardBg: "#070d16",
+      threatGlow: "rgba(255,46,136,.18)",
+      square: true
+    },
+    str: {
+      title: "深网防线", sub: "NETWATCH // FIREWALL",
+      wallLabel: "防火墙", castleLabel: "深网主脑",
+      castleName: "CORE · 主脑", castleDead: "CORE OFFLINE",
+      fuse: rem => "入侵进度 " + rem + "s",
+      matShort: ["", "·时", "·载"],
+      merge1: "⏱ 时序协议编译完成", merge2: "⚡ 过载核心上线！",
+      rewind: "⏪ 入侵回滚 · -15s",
+      smash: "⚔ 反制命中！", rise: "⚠ 病毒上涌！",
+      wall: "🚨 防火墙被穿透 -1", castleHit: "💥 CORE -1！",
+      melt: "🗑 丢包 · 入侵 +3s",
+      btnMelt: "丢 包", btnRot: "⟳ 旋转",
+      hintIdle: "点取数据包 · 同形相邻可编译",
+      hintHold: "点机架部署 · 右键/R 旋转",
+      hintDead: "无处部署——丢包或等待上涌",
+      beltFull: "队列拥塞！", beltFullV: "拥塞！", beltLabel: "数据队列",
+      winTitle: "主 脑 宕 机", loseTitle: "防 火 墙 崩 溃",
+      helpHTML: HELP_CYBER + HELP_KEYS
+    }
+  }
+};
+
+/* ================= 布局引擎 ================= */
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let DW = 390, DH = 844, L = null, scale = 1, ox = 0, oy = 0;
+function computeLayout() {
+  const aspect = innerWidth / innerHeight;
+  if (aspect >= 1.02) {
+    DW = 1180; DH = 760;
+    const cell = 42, bw = COLS * cell, bh = ROWS * cell, bx = 400, by = 66;
+    L = {
+      orient: "d",
+      board: { x: bx, y: by, cell },
+      castle: { x: bx, y: by + bh + 14, w: bw, h: 64 },
+      panel: { x: 24, y: 24, w: 212, h: 712 },
+      fuse: { x: 44, y: 306, w: 172, h: 16 },
+      beltPanel: { x: 996, y: 24, w: 160, h: 712 },
+      beltDir: "v", beltStride: 84, miniU: 14,
+      slots: [],
+      btnRot: { x: 44, y: 348, w: 172, h: 46 },
+      btnMelt: { x: 44, y: 406, w: 172, h: 46 },
+      icons: { help: { x: 44, y: 676, w: 36, h: 36 }, mute: { x: 96, y: 676, w: 36, h: 36 }, restart: { x: 148, y: 676, w: 36, h: 36 } },
+      ovA: { x: DW / 2 - 140, y: DH / 2 + 24, w: 130, h: 46 },
+      ovB: { x: DW / 2 + 10, y: DH / 2 + 24, w: 130, h: 46 }
+    };
+    for (let i = 0; i < BELT_N; i++) L.slots.push({ x: 1040, y: 50 + i * 84, w: 72, h: 72 });
+  } else {
+    DW = 390; DH = 844;
+    L = {
+      orient: "p",
+      board: { x: 45, y: 160, cell: 30 },
+      castle: { x: 45, y: 594, w: 300, h: 60 },
+      fuse: { x: 16, y: 62, w: 358, h: 14 },
+      beltPanel: { x: 11, y: 80, w: 367, h: 70 },
+      beltDir: "h", beltStride: 45, miniU: 8,
+      slots: [],
+      btnRot: { x: 65, y: 682, w: 120, h: 42 },
+      btnMelt: { x: 205, y: 682, w: 120, h: 42 },
+      icons: { help: { x: 282, y: 14, w: 28, h: 28 }, mute: { x: 316, y: 14, w: 28, h: 28 }, restart: { x: 350, y: 14, w: 28, h: 28 } },
+      ovA: { x: 55, y: 430, w: 130, h: 46 },
+      ovB: { x: 205, y: 430, w: 130, h: 46 }
+    };
+    for (let i = 0; i < BELT_N; i++) L.slots.push({ x: 17 + i * 45, y: 88, w: 40, h: 54 });
+  }
+}
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  cv.style.width = innerWidth + "px"; cv.style.height = innerHeight + "px";
+  computeLayout();
+  scale = Math.min(innerWidth / DW, innerHeight / DH);
+  ox = (innerWidth - DW * scale) / 2; oy = (innerHeight - DH * scale) / 2;
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
+}
+function toDesign(e) { return { x: (e.clientX - ox) / scale, y: (e.clientY - oy) / scale }; }
+const B = () => L.board;
+const slotR = i => L.slots[i];
+const slotCX = i => L.slots[i].x + L.slots[i].w / 2;
+const slotCY = i => L.slots[i].y + L.slots[i].h / 2;
+function badgePos(i) {
+  const s = L.slots[i];
+  return L.beltDir === "h" ? { x: s.x + s.w - 2, y: s.y - 4, r: 11 } : { x: s.x + s.w + 6, y: s.y + s.h - 2, r: 12 };
+}
+
+/* ================= 主题装载 ================= */
+const qs = new URLSearchParams(location.search);
+let themeName = qs.get("theme");
+if (!themeName) { try { themeName = localStorage.getItem("fb_theme"); } catch (e) { themeName = null; } }
+if (!THEMES[themeName]) themeName = "cyber";
+const THEME = THEMES[themeName];
+const PAL = THEME.pal, STR = THEME.str;
+const SERIF_TITLE = THEME.id === "forge";
+document.title = THEME.doc;
+
+/* ================= 游戏状态 ================= */
+let seed = qs.get("seed") || ("FORGE" + ((Math.random() * 1e6) | 0));
+let g = newGame(seed);
+let paused = true, overAt = 0, lastInput = "ptr";
+let kb = { beltSel: 0 };
+let ptr = { x: 0, y: 0, down: false, drag: false, touch: false };
+resize(); addEventListener("resize", resize);
+
+/* ================= 音效 ================= */
+let AC = null, muted = false;
+function ac() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (AC && AC.state === "suspended") AC.resume();
+  return AC;
+}
+function tone(f, d, type, v, when, slide) {
+  const c = ac(); if (!c || muted) return;
+  const t0 = c.currentTime + (when || 0);
+  const o = c.createOscillator(), gn = c.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t0);
+  if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + d);
+  gn.gain.setValueAtTime(v, t0);
+  gn.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+  o.connect(gn); gn.connect(c.destination);
+  o.start(t0); o.stop(t0 + d + 0.02);
+}
+function nz(d, v, when, fc) {
+  const c = ac(); if (!c || muted) return;
+  const t0 = c.currentTime + (when || 0);
+  const len = Math.max(1, Math.floor(c.sampleRate * d));
+  const buf = c.createBuffer(1, len, c.sampleRate);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = c.createBufferSource(); src.buffer = buf;
+  const fl = c.createBiquadFilter(); fl.type = "lowpass"; fl.frequency.value = fc;
+  const gn = c.createGain(); gn.gain.value = v;
+  src.connect(fl); fl.connect(gn); gn.connect(c.destination);
+  src.start(t0);
+}
+const SFX = {
+  pick:   () => { tone(520, .07, "square", .09); tone(760, .06, "square", .06, .05); },
+  place:  () => { tone(210, .07, "triangle", .18); nz(.05, .10, 0, 900); },
+  placeM: () => { tone(660, .09, "triangle", .12); tone(990, .08, "triangle", .08, .06); },
+  merge1: () => { tone(440, .08, "triangle", .14); tone(660, .10, "triangle", .14, .08); },
+  merge2: () => { [523, 659, 784, 1046].forEach((f, i) => tone(f, .10, "triangle", .15, i * .06)); },
+  clear:  c => { const b = 620 * Math.pow(1.12, Math.min(c, 8)); [0, 1, 2].forEach(i => tone(b * [1, 1.26, 1.5][i], .08, "square", .09, i * .05)); nz(.1, .12, 0, 1200); },
+  rewind: () => tone(880, .3, "sine", .12, 0, 240),
+  smash:  () => { nz(.16, .26, 0, 600); tone(150, .16, "sawtooth", .15, 0, 55); },
+  rise:   () => { tone(70, .5, "sawtooth", .22, 0, 48); nz(.3, .12, 0, 220); },
+  wall:   () => { nz(.25, .30, 0, 300); tone(60, .3, "sine", .32, 0, 38); },
+  castle: () => { nz(.45, .36, 0, 500); tone(55, .55, "sine", .38, 0, 28); },
+  melt:   () => { nz(.2, .12, 0, 2400); tone(320, .18, "sine", .08, 0, 120); },
+  win:    () => [523, 659, 784, 1046, 1318, 1568].forEach((f, i) => tone(f, .2, "triangle", .16, i * .12)),
+  lose:   () => [330, 262, 196, 131].forEach((f, i) => tone(f, .28, "sawtooth", .14, i * .18)),
+  no:     () => tone(180, .08, "square", .08)
+};
+function sfx(k, a) { if (!muted && SFX[k]) SFX[k](a); }
+
+/* ================= 粒子 / 浮字 / 震动 ================= */
+const P = [], FLOATS = [];
+let shakeT = 0, shakeAmp = 0, hurtT = 0, fuseFlashT = 0, castleFlashT = 0, boardShiftT = 0;
+let clearAnim = null;
+function burst(x, y, n, colors, opt) {
+  opt = opt || {};
+  for (let i = 0; i < n; i++) {
+    if (P.length > 260) break;
+    const a = Math.random() * Math.PI * 2, sp = (opt.s0 || 30) + Math.random() * ((opt.s1 || 120) - (opt.s0 || 30));
+    P.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (opt.up || 30),
+             g: opt.g == null ? 240 : opt.g, t: 0,
+             l: (opt.l0 || .3) + Math.random() * ((opt.l1 || .8) - (opt.l0 || .3)),
+             r: (opt.r0 || 1.2) + Math.random() * ((opt.r1 || 3) - (opt.r0 || 1.2)),
+             c: colors[(Math.random() * colors.length) | 0] });
+  }
+}
+function float(txt_, x, y, color, big) {
+  FLOATS.push({ txt: txt_, x, y, color: color || "#ffd76a", t: 0, big: !!big });
+}
+function shake(amp) { shakeT = .45; shakeAmp = Math.max(shakeAmp, amp); }
+/* 环境粒子：锻造=上升余烬 / 赛博=下落数据雨 */
+const EMBERS = [];
+function ember(dt) {
+  const cyber = PAL.skin === "cyber";
+  if (EMBERS.length < 26 && Math.random() < dt * 6)
+    EMBERS.push(cyber
+      ? { x: Math.random() * DW, y: -10, vy: 90 + Math.random() * 70, vx: 0, t: 0, l: 5 + Math.random() * 4, r: .8 + Math.random() * 1.2 }
+      : { x: Math.random() * DW, y: DH + 6, vy: -14 - Math.random() * 22, vx: (Math.random() - .5) * 8, t: 0, l: 6 + Math.random() * 6, r: .8 + Math.random() * 1.6 });
+  for (let i = EMBERS.length - 1; i >= 0; i--) {
+    const e = EMBERS[i]; e.t += dt;
+    if (e.t > e.l) { EMBERS.splice(i, 1); continue; }
+    e.x += e.vx * dt + (cyber ? 0 : Math.sin(e.t * 2 + i) * 8 * dt); e.y += e.vy * dt;
+  }
+}
+
+/* ================= 事件 → 演出 ================= */
+const MAT_COLORS = PAL.skin === "cyber"
+  ? { 0: ["#00e5ff", "#7df3ff", "#bffbff"], 1: ["#d9fbff", "#7fd4e8", "#ffffff"], 2: ["#ffe58a", "#ffb300", "#fff6c8"] }
+  : { 0: ["#ffc37a", "#ff8a3c", "#ffe0b0"], 1: ["#d9fbff", "#7fd4e8", "#ffffff"], 2: ["#ffe58a", "#ffd23c", "#fff6c8"] };
+const THREAT_COLORS = PAL.skin === "cyber" ? ["#ff2e88", "#a01050", "#ff7ab8"] : ["#86c232", "#4d7c0f", "#b6e36a"];
+function cellCX(x) { return B().x + (x + .5) * B().cell; }
+function cellCY(y) { return B().y + (y + .5) * B().cell; }
+function boardBot() { return B().y + ROWS * B().cell; }
+function drainEvents() {
+  for (const e of g.ev) {
+    switch (e.type) {
+      case "spawn": if (g.belt[e.slot]) g.belt[e.slot].pop = 1; break;
+      case "pick": sfx("pick"); burst(slotCX(e.slot), slotCY(e.slot), 8, MAT_COLORS[e.m]); break;
+      case "merge": {
+        sfx(e.mat === 2 ? "merge2" : "merge1");
+        float(e.mat === 2 ? STR.merge2 : STR.merge1, slotCX(e.slot), slotCY(e.slot) - L.slots[e.slot].h / 2 - 8, e.mat === 2 ? "#ffd76a" : "#8fe3f2");
+        if (e.mat === 2) burst(slotCX(e.slot), slotCY(e.slot), 22, MAT_COLORS[2], { s1: 160 });
+        break;
+      }
+      case "place": {
+        sfx(e.m ? "placeM" : "place");
+        e.cells.forEach(c => burst(cellCX(c[0]), cellCY(c[1]), e.m ? 5 : 3, MAT_COLORS[e.m], { s1: 80, l1: .5 }));
+        break;
+      }
+      case "clear": {
+        sfx("clear", e.combo);
+        clearAnim = { rows: e.rows, cols: e.cols, t: 0 };
+        if (e.combo > 1) float("连击 ×" + e.combo, B().x + COLS * B().cell / 2, B().y + 60, PAL.brassHi, true);
+        break;
+      }
+      case "rewind": sfx("rewind"); fuseFlashT = .7;
+        float(STR.rewind, L.fuse.x + L.fuse.w / 2, L.fuse.y - 10, "#8fe3f2"); break;
+      case "smash": sfx("smash"); shake(4);
+        for (let i = 0; i < 16; i++) burst(B().x + Math.random() * COLS * B().cell, boardBot() - 6, 2, THREAT_COLORS);
+        float(STR.smash, B().x + COLS * B().cell / 2, boardBot() - 46, "#ffd76a"); break;
+      case "rise": sfx("rise"); shake(8); boardShiftT = .35;
+        for (let i = 0; i < 14; i++) burst(B().x + Math.random() * COLS * B().cell, boardBot() - 4, 2, THREAT_COLORS);
+        float(STR.rise, B().x + COLS * B().cell / 2, boardBot() - 40, PAL.skin === "cyber" ? "#ff5aa0" : "#a4e34d", true); break;
+      case "wall": sfx("wall"); shake(9); hurtT = .7;
+        float(STR.wall, B().x + COLS * B().cell / 2, B().y + 70, "#ff8a7a", true); break;
+      case "castle": sfx("castle"); shake(10); castleFlashT = .6;
+        burst(L.castle.x + L.castle.w / 2, L.castle.y + L.castle.h / 2, 44, ["#ff9a3c", "#ff5a3c", "#ffd23c", "#fff6c8"], { s1: 240, l1: 1 });
+        float(STR.castleHit, L.castle.x + L.castle.w / 2, L.castle.y - 10, "#ffd76a", true); break;
+      case "melt": sfx("melt");
+        float(STR.melt, B().x + COLS * B().cell / 2, B().y + ROWS * B().cell / 2, "#ff8a7a"); break;
+      case "win": sfx("win"); shake(8); overAt = performance.now();
+        burst(L.castle.x + L.castle.w / 2, L.castle.y + L.castle.h / 2, 60, ["#ff9a3c", "#ffd23c", "#fff6c8"], { s1: 260, l1: 1.2 });
+        for (let i = 0; i < 80; i++)
+          burst(Math.random() * DW, Math.random() * DH * .4, 1, ["#ffd23c", "#7de3ff", "#ff7ab8", "#a4e34d", "#c9b8ff"], { g: 200, s0: 60, s1: 260, l0: .8, l1: 1.8 });
+        break;
+      case "lose": sfx("lose"); shake(6); hurtT = 1; overAt = performance.now(); break;
+    }
+  }
+  g.ev.length = 0;
+}
+
+/* ================= 绘制辅助 ================= */
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+const FONT_SANS = '"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif';
+const FONT_SERIF = '"Songti SC","STSong","Noto Serif CJK SC","SimSun",serif';
+function txt(s, x, y, size, color, align, weight, serif) {
+  ctx.font = (weight ? weight + " " : "") + size + "px " + (serif ? FONT_SERIF : FONT_SANS);
+  ctx.textAlign = align || "left"; ctx.textBaseline = "middle";
+  ctx.fillStyle = color; ctx.fillText(s, x, y);
+}
+function grad(x0, y0, x1, y1, stops) {
+  const gr = ctx.createLinearGradient(x0, y0, x1, y1);
+  stops.forEach(s => gr.addColorStop(s[0], s[1]));
+  return gr;
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")";
+}
+
+/* 纹章：筝形盾（我方 HP，双主题通用，描边随主题） */
+function drawShield(cx, cy, s, on) {
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.beginPath();
+  ctx.moveTo(0, -s);
+  ctx.quadraticCurveTo(s * .95, -s * .75, s * .8, 0);
+  ctx.quadraticCurveTo(s * .68, s * .72, 0, s * 1.1);
+  ctx.quadraticCurveTo(-s * .68, s * .72, -s * .8, 0);
+  ctx.quadraticCurveTo(-s * .95, -s * .75, 0, -s);
+  ctx.closePath();
+  if (on) {
+    ctx.fillStyle = grad(0, -s, 0, s * 1.1, [[0, "#b03a2a"], [1, "#6e1d12"]]);
+    ctx.fill();
+    ctx.strokeStyle = PAL.brassHi; ctx.lineWidth = s * .2; ctx.stroke();
+    ctx.fillStyle = "rgba(255,235,200,.35)";
+    ctx.beginPath(); ctx.moveTo(0, -s * .55); ctx.lineTo(s * .3, -s * .1); ctx.lineTo(0, s * .35); ctx.lineTo(-s * .3, -s * .1); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.fillStyle = "#1c1926"; ctx.fill();
+    ctx.strokeStyle = "#35304a"; ctx.lineWidth = s * .2; ctx.stroke();
+  }
+  ctx.restore();
+}
+/* 纹章：三角战旗（敌方 HP） */
+function drawBanner(cx, cy, s, on) {
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.strokeStyle = "#6e6249"; ctx.lineWidth = s * .18;
+  ctx.beginPath(); ctx.moveTo(0, -s * 1.2); ctx.lineTo(0, s * 1.3); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, -s * 1.2); ctx.lineTo(s * 1.25, -s * .68); ctx.lineTo(0, -s * .16);
+  ctx.closePath();
+  if (on) {
+    ctx.fillStyle = grad(0, -s * 1.2, s * 1.2, -s * .2, PAL.skin === "cyber" ? [[0, "#ff2e88"], [1, "#8f0e42"]] : [[0, "#8a54e8"], [1, "#4a2a98"]]);
+    ctx.fill();
+    ctx.strokeStyle = PAL.brass; ctx.lineWidth = s * .1; ctx.stroke();
+  } else {
+    ctx.fillStyle = "#1c1926"; ctx.fill();
+    ctx.strokeStyle = "#35304a"; ctx.lineWidth = s * .1; ctx.stroke();
+  }
+  ctx.restore();
+}
+/* 宝石切面（锻造棋子） */
+const GEM_STOPS = {
+  1: [[0, "#ffd9a8"], [.45, "#e8722a"], [1, "#8f3e0c"]],
+  2: [[0, "#fff6c0"], [.5, "#edbb2e"], [1, "#8a5f06"]],
+  4: [[0, "#f2fdff"], [.5, "#9adcf0"], [1, "#3d7488"]]
+};
+function drawGem(px, py, s, v) {
+  const stops = GEM_STOPS[v];
+  const cx = px + s / 2, cy = py + s / 2, k = s * .18;
+  const path = () => {
+    ctx.beginPath();
+    ctx.moveTo(px + k, py + 1); ctx.lineTo(px + s - k, py + 1); ctx.lineTo(px + s - 1, py + k);
+    ctx.lineTo(px + s - 1, py + s - k); ctx.lineTo(px + s - k, py + s - 1); ctx.lineTo(px + k, py + s - 1);
+    ctx.lineTo(px + 1, py + s - k); ctx.lineTo(px + 1, py + k);
+    ctx.closePath();
+  };
+  path();
+  ctx.fillStyle = grad(px, py, px + s, py + s, stops); ctx.fill();
+  ctx.save(); path(); ctx.clip();
+  ctx.fillStyle = "rgba(255,255,255,.16)";
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py); ctx.lineTo(px + s, py); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py + s); ctx.lineTo(px, py); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "rgba(0,0,0,.14)";
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px + s, py); ctx.lineTo(px + s, py + s); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py + s); ctx.lineTo(px + s, py + s); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,.38)";
+  ctx.beginPath();
+  ctx.moveTo(cx - s * .16, cy - s * .2); ctx.lineTo(cx + s * .1, cy - s * .26);
+  ctx.lineTo(cx + s * .2, cy - s * .1); ctx.lineTo(cx - s * .06, cy - s * .04);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 1;
+  path(); ctx.stroke();
+}
+/* 全息碎片（赛博棋子） */
+const SHARD_COLORS = { 1: "#00e5ff", 2: "#ffb300", 4: "#aef4ff" };
+function drawShard(px, py, s, v) {
+  const c = SHARD_COLORS[v];
+  rr(px + 1.5, py + 1.5, s - 3, s - 3, 4);
+  ctx.fillStyle = grad(px, py, px + s, py + s, [[0, hexA(c, .34)], [1, hexA(c, .10)]]);
+  ctx.fill();
+  ctx.strokeStyle = c; ctx.lineWidth = 1.3;
+  rr(px + 1.5, py + 1.5, s - 3, s - 3, 4); ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(px + 4, py + s * .42); ctx.lineTo(px + s * .42, py + 4); ctx.stroke();
+  ctx.fillStyle = hexA(c, .85);
+  ctx.beginPath(); ctx.arc(px + s * .68, py + s * .68, s * .07, 0, 6.2832); ctx.fill();
+}
+/* 威胁格：锻造=魔岩魔眼 / 赛博=故障病毒 */
+function drawThreat(px, py, s) {
+  if (PAL.skin === "cyber") {
+    rr(px + 1, py + 1, s - 2, s - 2, 2);
+    ctx.fillStyle = grad(px, py, px, py + s, [[0, "#33102a"], [1, "#180510"]]); ctx.fill();
+    ctx.fillStyle = "rgba(255,46,136,.35)";
+    ctx.fillRect(px + 3, py + s * .28, s * .55, 1.5);
+    ctx.fillRect(px + s * .35, py + s * .58, s * .6, 1.5);
+    ctx.fillRect(px + 4, py + s * .8, s * .4, 1.5);
+    ctx.save();
+    ctx.shadowColor = "rgba(255,46,136,.9)"; ctx.shadowBlur = 4;
+    ctx.fillStyle = "#ff5aa0";
+    ctx.beginPath(); ctx.arc(px + s * .33, py + s * .38, s * .07, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(px + s * .67, py + s * .38, s * .07, 0, 6.2832); ctx.fill();
+    ctx.restore();
+  } else {
+    rr(px + 1, py + 1, s - 2, s - 2, 2);
+    ctx.fillStyle = grad(px, py, px + s, py + s, [[0, "#3a4531"], [1, "#1a2318"]]); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px + 3, py + s * .65); ctx.lineTo(px + s * .45, py + s * .4); ctx.lineTo(px + s - 4, py + s * .72); ctx.stroke();
+    ctx.save();
+    ctx.shadowColor = "rgba(160,240,80,.9)"; ctx.shadowBlur = 4;
+    ctx.fillStyle = "#b8e85a";
+    ctx.beginPath(); ctx.arc(px + s * .33, py + s * .38, s * .07, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(px + s * .67, py + s * .38, s * .07, 0, 6.2832); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px + s * .22, py + s * .26); ctx.lineTo(px + s * .42, py + s * .32); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px + s * .78, py + s * .26); ctx.lineTo(px + s * .58, py + s * .32); ctx.stroke();
+  }
+}
+/* 格子：v 1 普通 2 金 3 威胁 4 银 */
+function drawCell(px, py, v, sz) {
+  const s = sz || B().cell;
+  if (v === 3) { drawThreat(px, py, s); return; }
+  if (PAL.skin === "cyber") drawShard(px, py, s, v);
+  else drawGem(px, py, s, v);
+}
+
+/* ================= 背景 ================= */
+const RIDGE_FAR = [[0,706],[38,668],[82,700],[128,652],[176,694],[224,660],[268,700],[316,664],[356,696],[390,672]];
+const RIDGE_NEAR = [[0,790],[52,742],[108,786],[168,736],[228,792],[288,748],[340,788],[390,752]];
+function ridge(pts, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(-4, DH + 4);
+  pts.forEach(p => ctx.lineTo(p[0], p[1]));
+  ctx.lineTo(DW + 4, DH + 4); ctx.closePath(); ctx.fill();
+}
+function drawForgeBG_P() {
+  ctx.fillStyle = grad(0, 0, 0, DH, [[0, "#101527"], [.5, "#0a0d18"], [1, "#06070d"]]);
+  ctx.fillRect(0, 0, DW, DH);
+  ridge(RIDGE_FAR, "#0c1120");
+  ridge(RIDGE_NEAR, "#080b13");
+  const gl = ctx.createRadialGradient(DW / 2, DH + 60, 60, DW / 2, DH + 60, 400);
+  gl.addColorStop(0, "rgba(255,140,50,.10)"); gl.addColorStop(1, "rgba(255,140,50,0)");
+  ctx.fillStyle = gl; ctx.fillRect(0, 0, DW, DH);
+  [[128, 648], [316, 660]].forEach(p => {
+    ctx.fillStyle = "rgba(255,170,80,.5)";
+    ctx.fillRect(p[0] - 1, p[1] - 6, 2, 3);
+  });
+}
+function drawForgeBG_D() {
+  ctx.fillStyle = grad(0, 0, 0, DH, [[0, "#0d1322"], [.6, "#080b14"], [1, "#05060b"]]);
+  ctx.fillRect(0, 0, DW, DH);
+  [[270, 26], [952, 26]].forEach(p => {
+    ctx.fillStyle = "#0a0e1a";
+    ctx.fillRect(p[0], 0, p[1], DH);
+    ctx.fillStyle = "#0c1120";
+    ctx.fillRect(p[0] + 4, 0, 3, DH);
+  });
+  ctx.strokeStyle = "#101628"; ctx.lineWidth = 3;
+  [340, 880].forEach(x => {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 120); ctx.stroke();
+    ctx.strokeStyle = "#131a2e"; ctx.lineWidth = 1.5;
+    for (let y = 8; y < 120; y += 16) { ctx.beginPath(); ctx.arc(x, y, 5, 0, 6.2832); ctx.stroke(); }
+    ctx.strokeStyle = "#101628"; ctx.lineWidth = 3;
+  });
+  const gl = ctx.createRadialGradient(DW * .52, DH + 80, 80, DW * .52, DH + 80, 620);
+  gl.addColorStop(0, "rgba(255,140,50,.13)"); gl.addColorStop(1, "rgba(255,140,50,0)");
+  ctx.fillStyle = gl; ctx.fillRect(0, 0, DW, DH);
+  ctx.fillStyle = "#070a12"; ctx.fillRect(0, DH - 40, DW, 40);
+  ctx.strokeStyle = "rgba(201,163,92,.10)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, DH - 40); ctx.lineTo(DW, DH - 40); ctx.stroke();
+}
+function drawCyberBG(t) {
+  ctx.fillStyle = grad(0, 0, 0, DH, [[0, "#0a0d20"], [.5, "#070512"], [1, "#030208"]]);
+  ctx.fillRect(0, 0, DW, DH);
+  const hy = DH * .58;
+  /* 合成器落日 */
+  const sun = ctx.createRadialGradient(DW / 2, hy, 10, DW / 2, hy, DH * .24);
+  sun.addColorStop(0, "rgba(255,90,130,.5)"); sun.addColorStop(.6, "rgba(255,46,136,.18)"); sun.addColorStop(1, "rgba(255,46,136,0)");
+  ctx.fillStyle = sun;
+  ctx.beginPath(); ctx.arc(DW / 2, hy, DH * .24, 0, 6.2832); ctx.fill();
+  /* 城市剪影（确定性伪随机） */
+  ctx.fillStyle = "#05040c";
+  for (let x = 0; x < DW; x += 26) {
+    const h = 24 + 46 * Math.abs(Math.sin(x * 12.9898) * 0.9 + Math.sin(x * 3.7) * 0.1);
+    ctx.fillRect(x, hy - h, 22, h);
+  }
+  ctx.fillStyle = "rgba(0,229,255,.5)";
+  for (let x = 6; x < DW; x += 52) ctx.fillRect(x, hy - 14 - 30 * Math.abs(Math.sin(x * 7.1)), 2, 2);
+  ctx.fillStyle = "rgba(255,46,136,.5)";
+  for (let x = 30; x < DW; x += 78) ctx.fillRect(x, hy - 20 - 24 * Math.abs(Math.sin(x * 5.3)), 2, 2);
+  /* 透视网格地面 */
+  ctx.strokeStyle = "rgba(0,229,255,.10)"; ctx.lineWidth = 1;
+  for (let i = -12; i <= 12; i++) {
+    ctx.beginPath(); ctx.moveTo(DW / 2 + i * 30, hy); ctx.lineTo(DW / 2 + i * DW * .22, DH); ctx.stroke();
+  }
+  for (let k = 1; k <= 7; k++) {
+    const y = hy + (DH - hy) * (k / 7) * (k / 7);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(DW, y); ctx.stroke();
+  }
+  ctx.strokeStyle = "rgba(0,229,255,.25)";
+  ctx.beginPath(); ctx.moveTo(0, hy); ctx.lineTo(DW, hy); ctx.stroke();
+}
+function drawBG(t) {
+  if (PAL.skin === "cyber") drawCyberBG(t);
+  else if (L.orient === "p") drawForgeBG_P();
+  else drawForgeBG_D();
+  /* 环境粒子 */
+  EMBERS.forEach(e => {
+    ctx.globalAlpha = Math.max(0, .32 * (1 - e.t / e.l));
+    if (PAL.skin === "cyber") {
+      ctx.fillStyle = "#00e5ff";
+      ctx.fillRect(e.x, e.y, 1, 8);
+    } else {
+      ctx.fillStyle = "#ffb060";
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, 6.2832); ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
+  /* 暗角 */
+  const v = ctx.createRadialGradient(DW / 2, DH * .42, DH * .28, DW / 2, DH * .42, DH * .75);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,.38)");
+  ctx.fillStyle = v; ctx.fillRect(0, 0, DW, DH);
+}
+
+/* ================= 顶栏 / 面板 ================= */
+function iconBtn(key, label) {
+  const b = L.icons[key];
+  ctx.fillStyle = PAL.panelFill; rr(b.x, b.y, b.w, b.h, 8); ctx.fill();
+  ctx.strokeStyle = PAL.iconStroke; ctx.lineWidth = 1; rr(b.x, b.y, b.w, b.h, 8); ctx.stroke();
+  txt(label, b.x + b.w / 2, b.y + b.h / 2 + 1, L.orient === "d" ? 14 : 12, PAL.brass, "center", "600");
+}
+function drawTop() {
+  ctx.save(); ctx.shadowColor = hexA(PAL.brassHi, .35); ctx.shadowBlur = 12;
+  txt(STR.title, 16, 25, 21, PAL.brassHi, "left", "700", SERIF_TITLE); ctx.restore();
+  txt(STR.sub, 104, 26, 7.5, "#565071");
+  txt("seed " + g.seed, 16, 46, 8.5, "#565071");
+  for (let i = 0; i < WALL_HP; i++) drawShield(126 + i * 24, 44, 7, i < g.wall);
+  txt("分 " + g.score + " · 行 " + g.lines, 232, 45, 12, PAL.brassHi, "center", "600");
+  for (let i = 0; i < CASTLE_HP; i++) drawBanner(322 + i * 20, 44, 7, i < g.castle);
+  iconBtn("help", "?"); iconBtn("mute", muted ? "静" : "音"); iconBtn("restart", "↻");
+}
+function drawPanel() {
+  const Pn = L.panel;
+  ctx.fillStyle = PAL.panelFill; rr(Pn.x, Pn.y, Pn.w, Pn.h, 12); ctx.fill();
+  ctx.strokeStyle = PAL.brass; ctx.lineWidth = 1.2; rr(Pn.x, Pn.y, Pn.w, Pn.h, 12); ctx.stroke();
+  ctx.strokeStyle = hexA(PAL.brass, .22); rr(Pn.x + 4, Pn.y + 4, Pn.w - 8, Pn.h - 8, 9); ctx.stroke();
+  ctx.save(); ctx.shadowColor = hexA(PAL.brassHi, .4); ctx.shadowBlur = 14;
+  txt(STR.title, Pn.x + 20, Pn.y + 38, 25, PAL.brassHi, "left", "700", SERIF_TITLE); ctx.restore();
+  txt(STR.sub, Pn.x + 20, Pn.y + 60, 8, "#565071");
+  txt("seed " + g.seed, Pn.x + 20, Pn.y + 80, 9, "#565071");
+  ctx.strokeStyle = hexA(PAL.brass, .3); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(Pn.x + 16, Pn.y + 100); ctx.lineTo(Pn.x + Pn.w - 16, Pn.y + 100); ctx.stroke();
+  txt(STR.wallLabel, Pn.x + 20, Pn.y + 124, 10, PAL.dim);
+  for (let i = 0; i < WALL_HP; i++) drawShield(Pn.x + 34 + i * 34, Pn.y + 152, 10, i < g.wall);
+  txt(STR.castleLabel, Pn.x + 20, Pn.y + 188, 10, PAL.dim);
+  for (let i = 0; i < CASTLE_HP; i++) drawBanner(Pn.x + 34 + i * 30, Pn.y + 216, 9, i < g.castle);
+  txt(String(g.score), Pn.x + 20, Pn.y + 262, 26, PAL.brassHi, "left", "700", SERIF_TITLE);
+  txt("锻打 " + g.lines + " 线" + (g.combo > 1 ? " · 连击 ×" + g.combo : ""), Pn.x + 20, Pn.y + 288, 11, PAL.parch);
+  txt("操作", Pn.x + 20, Pn.y + 480, 10, PAL.dim);
+  ["点传送带取件，同形相邻可合成", "点锻造台放置 · 右键/R 旋转", "无处可放可熔毁（挖掘+3s）", "键盘 1-8 取件 · 方向键移动", "回车放置 · M 熔毁"].forEach((s, i) =>
+    txt(s, Pn.x + 20, Pn.y + 502 + i * 20, 9.5, "#6a6478"));
+  iconBtn("help", "?"); iconBtn("mute", muted ? "静" : "音"); iconBtn("restart", "↻");
+}
+
+/* ================= 威胁计时 ================= */
+function drawFuse(t) {
+  const F = L.fuse;
+  const p = g.digT / DIG_PERIOD, rem = Math.ceil(Math.max(0, DIG_PERIOD - g.digT));
+  ctx.fillStyle = PAL.panelFill; rr(F.x, F.y, F.w, F.h, 7); ctx.fill();
+  ctx.strokeStyle = PAL.panelStroke; ctx.lineWidth = 1; rr(F.x, F.y, F.w, F.h, 7); ctx.stroke();
+  const urgent = rem <= 5 && !g.over;
+  ctx.save(); rr(F.x, F.y, F.w, F.h, 7); ctx.clip();
+  ctx.fillStyle = urgent ? grad(F.x, 0, F.x + F.w, 0, [[0, PAL.hot], [1, PAL.fuseHi]])
+                         : grad(F.x, 0, F.x + F.w, 0, [[0, PAL.fuseLo], [1, PAL.fuseHi]]);
+  ctx.fillRect(F.x, F.y, F.w * p, F.h);
+  ctx.strokeStyle = "rgba(0,0,0,.35)"; ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(F.x + F.w * i / 4, F.y + 2); ctx.lineTo(F.x + F.w * i / 4, F.y + F.h - 2); ctx.stroke(); }
+  ctx.restore();
+  if (urgent) { ctx.save(); ctx.globalAlpha = .5 + .5 * Math.sin(t * 10);
+    ctx.strokeStyle = PAL.hot; ctx.lineWidth = 2; rr(F.x - 1, F.y - 1, F.w + 2, F.h + 2, 8); ctx.stroke(); ctx.restore(); }
+  if (fuseFlashT > 0) { ctx.globalAlpha = fuseFlashT; ctx.strokeStyle = "#7de3ff"; ctx.lineWidth = 2.5;
+    rr(F.x - 2, F.y - 2, F.w + 4, F.h + 4, 9); ctx.stroke(); ctx.globalAlpha = 1; }
+  txt(STR.fuse(rem), F.x + F.w / 2, F.y + F.h / 2 + .5, 10, PAL.fuseTxt, "center", "600");
+}
+
+/* ================= 传送带 ================= */
+function drawBelt(dt) {
+  const Pn = L.beltPanel, d = L.beltDir;
+  ctx.fillStyle = PAL.panelFill; rr(Pn.x, Pn.y, Pn.w, Pn.h, 10); ctx.fill();
+  ctx.strokeStyle = PAL.panelStroke; ctx.lineWidth = 1; rr(Pn.x, Pn.y, Pn.w, Pn.h, 10); ctx.stroke();
+  if (d === "v") txt(STR.beltLabel, Pn.x + Pn.w / 2, Pn.y + 16, 11, PAL.brass, "center", "600", SERIF_TITLE);
+  ctx.fillStyle = hexA(PAL.brass, .12);
+  const off = (performance.now() / 40) % 20;
+  if (d === "h") {
+    for (let x = Pn.x + Pn.w + 20 - off; x > Pn.x; x -= 20) {
+      ctx.beginPath(); ctx.moveTo(x, Pn.y + 5); ctx.lineTo(x - 7, Pn.y + 9); ctx.lineTo(x, Pn.y + 13); ctx.closePath(); ctx.fill();
+    }
+  } else {
+    for (let y = Pn.y + Pn.h + 20 - off; y > Pn.y + 24; y -= 20) {
+      ctx.beginPath(); ctx.moveTo(Pn.x + 10, y); ctx.lineTo(Pn.x + 14, y - 7); ctx.lineTo(Pn.x + 18, y); ctx.closePath(); ctx.fill();
+    }
+  }
+  const full = g.belt.every(Boolean);
+  for (let i = 0; i < BELT_N; i++) {
+    const s = slotR(i), it = g.belt[i];
+    ctx.fillStyle = full && it ? "#1a1214" : PAL.slotFill;
+    rr(s.x, s.y, s.w, s.h, 7); ctx.fill();
+    ctx.strokeStyle = it ? (it.m ? PAL.matStroke[it.m] : PAL.slotEmpty) : PAL.slotEmpty;
+    ctx.lineWidth = it && it.m ? 1.6 : 1;
+    rr(s.x, s.y, s.w, s.h, 7); ctx.stroke();
+    if (it && it.m === 2) { ctx.save(); ctx.globalAlpha = .35 + .3 * Math.sin(performance.now() / 300);
+      ctx.strokeStyle = "#ffd76a"; rr(s.x - 1.5, s.y - 1.5, s.w + 3, s.h + 3, 8); ctx.stroke(); ctx.restore(); }
+    if (!it) continue;
+    if (it.slide) it.slide *= Math.exp(-8 * dt);
+    if (it.pop) it.pop *= Math.exp(-6 * dt);
+    const dxy = (it.slide || 0) * L.beltStride;
+    const dx = d === "h" ? dxy : 0, dy = d === "v" ? dxy : 0;
+    const sc = 1 - .3 * (it.pop || 0);
+    if (!g.hand && !g.over && !anyFit(g, it.s, it.m)) {
+      ctx.save(); ctx.globalAlpha = .5 + .35 * Math.sin(performance.now() / 200);
+      ctx.strokeStyle = PAL.hot; rr(s.x + 1, s.y + 1, s.w - 2, s.h - 2, 6); ctx.stroke(); ctx.restore();
+    }
+    ctx.save();
+    ctx.translate(s.x + s.w / 2 + dx, s.y + s.h / 2 - (d === "h" ? 4 : 2) + dy);
+    ctx.scale(sc, sc);
+    drawMini(it.s, it.m);
+    ctx.restore();
+    txt(SHAPE_DEFS[it.s].name + STR.matShort[it.m], s.x + s.w / 2 + dx, s.y + s.h - (d === "h" ? 8 : 10), d === "h" ? 8.5 : 10,
+        it.m ? PAL.matText[it.m] : "#6a7490", "center");
+    if (lastInput === "kb" && kb.beltSel === i && !g.hand && !g.over) {
+      ctx.strokeStyle = hexA(PAL.brassHi, .6); ctx.lineWidth = 1.5;
+      rr(s.x - 2, s.y - 2, s.w + 4, s.h + 4, 8); ctx.stroke();
+    }
+  }
+  /* 合成徽章 */
+  for (let i = 0; i < BELT_N - 1; i++) {
+    const info = mergeInfo(g, i);
+    if (!info) continue;
+    const bp = badgePos(i), gold = info.mat === 2;
+    ctx.save();
+    ctx.shadowColor = gold ? "rgba(255,210,80,.9)" : "rgba(140,220,240,.8)"; ctx.shadowBlur = 8 + 4 * Math.sin(performance.now() / 240);
+    ctx.fillStyle = gold ? grad(bp.x, bp.y - bp.r, bp.x, bp.y + bp.r, [[0, "#ffe58a"], [1, "#c9920f"]])
+                         : grad(bp.x, bp.y - bp.r, bp.x, bp.y + bp.r, [[0, "#eafcff"], [1, "#5f98b0"]]);
+    ctx.beginPath(); ctx.arc(bp.x, bp.y, bp.r, 0, 6.2832); ctx.fill();
+    ctx.restore();
+    txt("合", bp.x, bp.y + .5, 10, "#2e2405", "center", "700");
+  }
+  if (full && !g.over) {
+    if (d === "h") txt(STR.beltFull, Pn.x + Pn.w / 2, Pn.y + Pn.h + 12, 10, "#ff8a7a", "center");
+    else txt(STR.beltFullV, Pn.x + Pn.w / 2, Pn.y + Pn.h - 8, 11, "#ff8a7a", "center");
+  }
+}
+function drawMini(s, m) {
+  const cells = SHAPE_DEFS[s].rots[0];
+  const w = SHAPE_DEFS[s].wds[0], h = SHAPE_DEFS[s].hts[0], u = L.miniU;
+  const v = m === 2 ? 2 : m === 1 ? 4 : 1;
+  cells.forEach(c => drawCell((c[0] - (w - 1) / 2) * u - u / 2, (c[1] - (h - 1) / 2) * u - u / 2, v, u));
+}
+
+/* ================= 盘面 ================= */
+function drawBoard() {
+  const b = B(), bw = COLS * b.cell, bh = ROWS * b.cell;
+  ctx.fillStyle = PAL.boardFrame; rr(b.x - 7, b.y - 7, bw + 14, bh + 14, 9); ctx.fill();
+  ctx.strokeStyle = PAL.brass; ctx.lineWidth = 1.5; rr(b.x - 7, b.y - 7, bw + 14, bh + 14, 9); ctx.stroke();
+  ctx.strokeStyle = hexA(PAL.brass, .25); ctx.lineWidth = 1; rr(b.x - 4, b.y - 4, bw + 8, bh + 8, 6); ctx.stroke();
+  [[b.x - 7, b.y - 7], [b.x + bw + 7, b.y - 7], [b.x - 7, b.y + bh + 7], [b.x + bw + 7, b.y + bh + 7]].forEach(p => {
+    ctx.fillStyle = PAL.brassHi; ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, 6.2832); ctx.fill();
+  });
+  const shift = boardShiftT > 0 ? boardShiftT / .35 * b.cell : 0;
+  ctx.save(); rr(b.x, b.y, bw, bh, 3); ctx.clip();
+  ctx.fillStyle = PAL.boardBg; ctx.fillRect(b.x, b.y, bw, bh);
+  ctx.strokeStyle = PAL.skin === "cyber" ? "rgba(0,229,255,.06)" : "rgba(180,190,220,.05)"; ctx.lineWidth = 1;
+  for (let x = 1; x < COLS; x++) { ctx.beginPath(); ctx.moveTo(b.x + x * b.cell, b.y); ctx.lineTo(b.x + x * b.cell, b.y + bh); ctx.stroke(); }
+  for (let y = 1; y < ROWS; y++) { ctx.beginPath(); ctx.moveTo(b.x, b.y + y * b.cell); ctx.lineTo(b.x + bw, b.y + y * b.cell); ctx.stroke(); }
+  ctx.translate(0, shift);
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const v = g.board[y][x];
+    if (v) drawCell(b.x + x * b.cell, b.y + y * b.cell, v);
+  }
+  ctx.translate(0, -shift);
+  /* 手中件幽灵 */
+  if (g.hand) {
+    const h = g.hand, ok = fits(g, h.s, h.rot, h.gx, h.gy);
+    const v = h.m === 2 ? 2 : h.m === 1 ? 4 : 1;
+    ctx.globalAlpha = ok ? .55 : .3;
+    SHAPE_DEFS[h.s].rots[h.rot].forEach(c => {
+      const px = b.x + (h.gx + c[0]) * b.cell, py = b.y + (h.gy + c[1]) * b.cell;
+      if (px < b.x - b.cell || px > b.x + bw || py < b.y - b.cell || py > b.y + bh) return;
+      drawCell(px, py, v);
+    });
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = ok ? "rgba(255,255,255,.85)" : hexA(PAL.hot, .9);
+    ctx.lineWidth = 2;
+    SHAPE_DEFS[h.s].rots[h.rot].forEach(c => {
+      const px = b.x + (h.gx + c[0]) * b.cell, py = b.y + (h.gy + c[1]) * b.cell;
+      rr(px + 1, py + 1, b.cell - 2, b.cell - 2, 3); ctx.stroke();
+    });
+  }
+  /* 消除光束 */
+  if (clearAnim) {
+    const a = 1 - clearAnim.t / .45;
+    if (a <= 0) clearAnim = null;
+    else {
+      ctx.globalAlpha = a * .9;
+      clearAnim.rows.forEach(y => {
+        ctx.fillStyle = grad(b.x, 0, b.x + bw, 0, [[0, "rgba(255,255,255,0)"], [.5, "#fff"], [1, "rgba(255,255,255,0)"]]);
+        ctx.fillRect(b.x, b.y + y * b.cell, bw, b.cell);
+      });
+      clearAnim.cols.forEach(x => {
+        ctx.fillStyle = grad(0, b.y, 0, b.y + bh, [[0, "rgba(255,255,255,0)"], [.5, "#fff"], [1, "rgba(255,255,255,0)"]]);
+        ctx.fillRect(b.x + x * b.cell, b.y, b.cell, bh);
+      });
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
+  /* 威胁压迫：底部辉光 */
+  let grows = 0;
+  for (let y = ROWS - 1; y >= 0 && g.board[y].includes(3); y--) grows++;
+  if (grows) {
+    const gl2 = ctx.createLinearGradient(0, b.y + bh - grows * b.cell - 30, 0, b.y + bh);
+    gl2.addColorStop(0, "rgba(0,0,0,0)"); gl2.addColorStop(1, PAL.threatGlow);
+    ctx.fillStyle = gl2; ctx.fillRect(b.x, b.y + bh - grows * b.cell - 30, bw, grows * b.cell + 30);
+  }
+}
+
+/* ================= 敌方核心 ================= */
+function drawCastle() {
+  if (PAL.skin === "cyber") drawCyberCastle();
+  else drawForgeCastle();
+}
+function drawForgeCastle() {
+  const C = L.castle, gx = C.x + C.w / 2, gw = C.w * .08;
+  ctx.save();
+  if (g.win) ctx.translate(0, 6);
+  ctx.fillStyle = g.win ? "#1a1820" : grad(0, C.y, 0, C.y + C.h, [[0, "#221c33"], [1, "#141020"]]);
+  ctx.beginPath();
+  ctx.moveTo(C.x, C.y + C.h);
+  ctx.lineTo(C.x, C.y + 18);
+  const teeth = 12;
+  for (let i = 0; i <= teeth; i++) {
+    const x = C.x + (C.w / teeth) * i;
+    ctx.lineTo(x, C.y + (i % 2 ? 4 : 14));
+  }
+  ctx.lineTo(C.x + C.w, C.y + C.h);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = PAL.panelStroke; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(gx - gw, C.y + C.h);
+  ctx.lineTo(gx - gw, C.y + C.h * .5);
+  ctx.arc(gx, C.y + C.h * .5, gw, Math.PI, 0);
+  ctx.lineTo(gx + gw, C.y + C.h);
+  ctx.closePath();
+  ctx.fillStyle = "#0a0710"; ctx.fill();
+  ctx.strokeStyle = PAL.brass; ctx.lineWidth = 1.2; ctx.stroke();
+  if (!g.win) {
+    const pg = ctx.createRadialGradient(gx, C.y + C.h * .55, 2, gx, C.y + C.h * .55, gw * .9);
+    pg.addColorStop(0, "rgba(150,230,90,.4)"); pg.addColorStop(1, "rgba(150,230,90,0)");
+    ctx.fillStyle = pg;
+    ctx.beginPath(); ctx.arc(gx, C.y + C.h * .55, gw * .9, 0, 6.2832); ctx.fill();
+    ctx.save();
+    ctx.shadowColor = "rgba(170,250,100,.95)"; ctx.shadowBlur = 7;
+    ctx.fillStyle = "#c8f06a";
+    const eo = 7 + Math.sin(performance.now() / 700) * .8;
+    ctx.beginPath(); ctx.arc(gx - eo, C.y + C.h * .62, 2.6, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(gx + eo, C.y + C.h * .62, 2.6, 0, 6.2832); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = "#221c33";
+    ctx.beginPath(); ctx.moveTo(gx - gw * .6, C.y + C.h * .36); ctx.lineTo(gx - gw * .95, C.y + 8); ctx.lineTo(gx - gw * .3, C.y + C.h * .26); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(gx + gw * .6, C.y + C.h * .36); ctx.lineTo(gx + gw * .95, C.y + 8); ctx.lineTo(gx + gw * .3, C.y + C.h * .26); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(gx - gw * .7, C.y + C.h * .3); ctx.lineTo(gx + gw * .2, C.y + C.h * .7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(gx + gw * .4, C.y + C.h * .4); ctx.lineTo(gx + gw * .75, C.y + C.h * .8); ctx.stroke();
+  }
+  txt(g.win ? STR.castleDead : STR.castleName, gx, C.y + C.h - 8, 10, g.win ? "#6a6478" : PAL.parch, "center", "600");
+  if (castleFlashT > 0) {
+    ctx.globalAlpha = castleFlashT * 1.4;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(C.x, C.y, C.w, C.h);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+function drawCyberCastle() {
+  const C = L.castle, gx = C.x + C.w / 2, cy = C.y + C.h * .52, r = C.h * .34;
+  const t = performance.now() / 1000;
+  /* 平台 */
+  ctx.fillStyle = g.win ? "#14161c" : grad(0, C.y, 0, C.y + C.h, [[0, "#0e1622"], [1, "#080d16"]]);
+  ctx.beginPath();
+  ctx.moveTo(C.x, C.y + C.h);
+  ctx.lineTo(C.x + C.w * .1, C.y + 6);
+  ctx.lineTo(C.x + C.w * .9, C.y + 6);
+  ctx.lineTo(C.x + C.w, C.y + C.h);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = PAL.panelStroke; ctx.lineWidth = 1.5; ctx.stroke();
+  /* 六边形核心 */
+  const hex = rad => {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 6 + i * Math.PI / 3;
+      const x = gx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+  };
+  hex(r + 8);
+  ctx.fillStyle = "#070a12"; ctx.fill();
+  ctx.strokeStyle = g.win ? "#3a4048" : PAL.brass; ctx.lineWidth = 1.5; ctx.stroke();
+  hex(r);
+  ctx.fillStyle = g.win ? "#16181e" : grad(gx - r, cy - r, gx + r, cy + r, [[0, "#1a0a18"], [1, "#0a0510"]]);
+  ctx.fill();
+  if (!g.win) {
+    /* 旋转扫描弧 */
+    ctx.save();
+    ctx.strokeStyle = hexA(PAL.brassHi, .7); ctx.lineWidth = 2;
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.arc(gx, cy, r + 4, t * .9 + k * 2.094, t * .9 + k * 2.094 + 1.1);
+      ctx.stroke();
+    }
+    /* 脉冲红眼 */
+    const er = 5 + Math.sin(t * 3.2) * 1.6;
+    ctx.shadowColor = "rgba(255,46,136,.95)"; ctx.shadowBlur = 12;
+    ctx.fillStyle = "#ff2e88";
+    ctx.beginPath(); ctx.arc(gx, cy, er, 0, 6.2832); ctx.fill();
+    ctx.restore();
+  } else {
+    ctx.strokeStyle = "rgba(0,0,0,.7)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(gx - r * .6, cy - r * .4); ctx.lineTo(gx + r * .2, cy + r * .5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(gx + r * .5, cy - r * .5); ctx.lineTo(gx + r * .1, cy + r * .6); ctx.stroke();
+  }
+  txt(g.win ? STR.castleDead : STR.castleName, gx, C.y + C.h - 8, 10, g.win ? "#6a6478" : PAL.parch, "center", "600");
+  if (castleFlashT > 0) {
+    ctx.globalAlpha = castleFlashT * 1.4;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(C.x, C.y, C.w, C.h);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ================= 按钮 / 提示 / 结算 ================= */
+function drawBtn(b, label, enabled, hot) {
+  ctx.globalAlpha = enabled ? 1 : .38;
+  ctx.fillStyle = hot ? grad(0, b.y, 0, b.y + b.h, [[0, hexA(PAL.hot, .55)], [1, hexA(PAL.hot, .3)]])
+                      : grad(0, b.y, 0, b.y + b.h, [[0, "#1d2432"], [1, "#131824"]]);
+  rr(b.x, b.y, b.w, b.h, 10); ctx.fill();
+  ctx.strokeStyle = hot ? PAL.hot : PAL.brass; ctx.lineWidth = 1.2;
+  rr(b.x, b.y, b.w, b.h, 10); ctx.stroke();
+  txt(label, b.x + b.w / 2, b.y + b.h / 2 + 1, 14, enabled ? PAL.parch : "#8a8598", "center", "600");
+  ctx.globalAlpha = 1;
+}
+function drawControls() {
+  const holding = !!g.hand && !g.over;
+  drawBtn(L.btnRot, STR.btnRot, holding, false);
+  const deadHand = holding && !anyFit(g, g.hand.s, g.hand.m);
+  drawBtn(L.btnMelt, STR.btnMelt, holding, deadHand);
+  if (L.orient === "p")
+    txt(g.over ? "" : holding ? (deadHand ? STR.hintDead : STR.hintHold) : STR.hintIdle,
+        DW / 2, 744, 10, "#6a6478", "center");
+}
+function drawOverlay() {
+  if (!g.over || performance.now() - overAt < (g.win ? 1100 : 700)) return;
+  ctx.fillStyle = PAL.skin === "cyber" ? "rgba(3,2,8,.86)" : "rgba(5,4,10,.84)"; ctx.fillRect(0, 0, DW, DH);
+  const win = g.win, cx = DW / 2;
+  ctx.strokeStyle = hexA(PAL.brass, .5); ctx.lineWidth = 1;
+  rr(cx - 150, DH / 2 - 130, 300, 250, 14); ctx.stroke();
+  txt(win ? STR.winTitle : STR.loseTitle, cx, DH / 2 - 80, 26, win ? PAL.brassHi : "#ff8a7a", "center", "700", SERIF_TITLE);
+  txt("得分 " + g.score + " · 锻打 " + g.lines + " 线 · 最佳连击 ×" + Math.max(1, g.bestCombo), cx, DH / 2 - 36, 12, PAL.parch, "center");
+  txt("用时 " + Math.floor(g.time / 60) + "分" + Math.floor(g.time % 60) + "秒 · seed " + g.seed, cx, DH / 2 - 14, 10, "#8a8598", "center");
+  drawBtn(L.ovA, "再来一局", true, false);
+  drawBtn(L.ovB, "新的种子", true, false);
+}
+
+/* ================= 粒子 / 浮字 ================= */
+function drawFx(dt) {
+  for (let i = P.length - 1; i >= 0; i--) {
+    const p = P[i]; p.t += dt;
+    if (p.t >= p.l) { P.splice(i, 1); continue; }
+    p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    ctx.globalAlpha = 1 - p.t / p.l; ctx.fillStyle = p.c;
+    if (PAL.square) ctx.fillRect(p.x - p.r / 2, p.y - p.r / 2, p.r, p.r);
+    else { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.2832); ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+  for (let i = FLOATS.length - 1; i >= 0; i--) {
+    const f = FLOATS[i]; f.t += dt;
+    if (f.t > 1.3) { FLOATS.splice(i, 1); continue; }
+    ctx.globalAlpha = f.t < .15 ? f.t / .15 : 1 - Math.max(0, (f.t - .8) / .5);
+    txt(f.txt, f.x, f.y - f.t * 34, f.big ? 19 : 14, f.color, "center", "700");
+  }
+  ctx.globalAlpha = 1;
+}
+function drawHand() {
+  if (!g.hand || lastInput !== "ptr" || !ptr.drag) return;
+  const cell = B().cell;
+  ctx.globalAlpha = .92;
+  const v = g.hand.m === 2 ? 2 : g.hand.m === 1 ? 4 : 1;
+  const w = SHAPE_DEFS[g.hand.s].wds[g.hand.rot], h = SHAPE_DEFS[g.hand.s].hts[g.hand.rot];
+  SHAPE_DEFS[g.hand.s].rots[g.hand.rot].forEach(c => {
+    drawCell(ptr.x + (c[0] - w / 2) * cell, ptr.y - (ptr.touch ? 64 : 16) + (c[1] - h / 2) * cell, v, cell * .9);
+  });
+  ctx.globalAlpha = 1;
+}
+
+/* ================= 输入 ================= */
+function inRect(p, r) { return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
+function beltSlotAt(p) {
+  for (let i = 0; i < BELT_N; i++) {
+    const s = slotR(i);
+    if (p.x >= s.x - 3 && p.x <= s.x + s.w + 3 && p.y >= s.y - 10 && p.y <= s.y + s.h + 8) return i;
+  }
+  return -1;
+}
+function mergeBadgeAt(p) {
+  for (let i = 0; i < BELT_N - 1; i++) {
+    if (!mergeInfo(g, i)) continue;
+    const bp = badgePos(i), dx = p.x - bp.x, dy = p.y - bp.y, rr2 = bp.r + 4;
+    if (dx * dx + dy * dy < rr2 * rr2) return i;
+  }
+  return -1;
+}
+function updateGhost(p) {
+  if (!g.hand) return;
+  const h = g.hand, cell = B().cell;
+  const w = SHAPE_DEFS[h.s].wds[h.rot], hh = SHAPE_DEFS[h.s].hts[h.rot];
+  const lift = ptr.touch ? 64 / cell : 0;
+  h.gx = Math.round((p.x - B().x) / cell - w / 2);
+  h.gy = Math.round((p.y - B().y) / cell - hh / 2 - lift);
+}
+function tryPlace() {
+  if (!g.hand) return;
+  if (!placeHand(g)) sfx("no");
+}
+cv.addEventListener("pointerdown", e => {
+  ac();
+  const p = toDesign(e);
+  ptr.x = p.x; ptr.y = p.y; ptr.down = true; ptr.touch = e.pointerType !== "mouse";
+  /* 右键 = 只旋转，不取件也不放置 */
+  if (e.button === 2) { if (g.hand && !g.over) rotateHand(); return; }
+  lastInput = "ptr";
+  if (g.over) {
+    if (performance.now() - overAt < 900) return;
+    if (inRect(p, L.ovA)) { g = newGame(seed); overAt = 0; }
+    else if (inRect(p, L.ovB)) { seed = "FORGE" + ((Math.random() * 1e6) | 0); g = newGame(seed); overAt = 0; }
+    return;
+  }
+  if (inRect(p, L.icons.help)) { openHelp(); return; }
+  if (inRect(p, L.icons.mute)) { muted = !muted; return; }
+  if (inRect(p, L.icons.restart)) { g = newGame(seed); return; }
+  if (g.hand && inRect(p, L.btnRot)) { rotateHand(); return; }
+  if (g.hand && inRect(p, L.btnMelt)) { meltHand(g); return; }
+  const mb = mergeBadgeAt(p);
+  if (mb >= 0) { mergeAt(g, mb); return; }
+  const b = B();
+  if (g.hand && p.x >= b.x && p.x <= b.x + COLS * b.cell && p.y >= b.y && p.y <= b.y + ROWS * b.cell) {
+    updateGhost(p); tryPlace(); ptr.drag = true; return;
+  }
+  const si = beltSlotAt(p);
+  if (si >= 0 && !g.hand) {
+    if (pick(g, si)) { kb.beltSel = si; ptr.drag = true; updateGhost(p); }
+    return;
+  }
+});
+cv.addEventListener("pointermove", e => {
+  const p = toDesign(e);
+  ptr.x = p.x; ptr.y = p.y;
+  lastInput = "ptr";          /* 真实的指针移动即切回指针模式（R 旋转后恢复跟随） */
+  if (g.hand) updateGhost(p);
+});
+cv.addEventListener("pointerup", e => {
+  const p = toDesign(e);
+  ptr.down = false;
+  const b = B();
+  if (ptr.drag && g.hand && p.x >= b.x - b.cell && p.x <= b.x + (COLS + 1) * b.cell && p.y >= b.y - b.cell && p.y <= b.y + (ROWS + 1) * b.cell) {
+    updateGhost(p); tryPlace();
+  }
+  ptr.drag = false;
+});
+cv.addEventListener("contextmenu", e => {
+  e.preventDefault();   /* 旋转在 pointerdown(button 2) 里处理，这里只压菜单 */
+});
+function rotateHand() {
+  if (!g.hand) return;
+  g.hand.rot = (g.hand.rot + 1) % SHAPE_DEFS[g.hand.s].rots.length;
+  sfx("pick");
+  if (lastInput === "ptr") updateGhost(ptr);
+}
+document.addEventListener("keydown", e => {
+  ac(); lastInput = "kb";
+  if (g.over) { if (e.key === "Enter" || e.key === " ") g = newGame(seed); return; }
+  const h = g.hand;
+  if (!h) {
+    if (e.key === "ArrowLeft") kb.beltSel = Math.max(0, kb.beltSel - 1);
+    else if (e.key === "ArrowRight") kb.beltSel = Math.min(BELT_N - 1, kb.beltSel + 1);
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(g, kb.beltSel); }
+    else if (e.key >= "1" && e.key <= "8") pick(g, +e.key - 1);
+    else if (e.key === "m" || e.key === "M") { const mi = firstMerge(); if (mi >= 0) mergeAt(g, mi); }
+    return;
+  }
+  switch (e.key) {
+    case "ArrowLeft": h.gx--; break;
+    case "ArrowRight": h.gx++; break;
+    case "ArrowUp": h.gy--; break;
+    case "ArrowDown": h.gy++; break;
+    case "r": case "R": rotateHand(); break;
+    case "Enter": case " ": e.preventDefault(); tryPlace(); break;
+    case "m": case "M": meltHand(g); break;
+    case "Escape": break;
+  }
+});
+function firstMerge() { for (let i = 0; i < BELT_N - 1; i++) if (mergeInfo(g, i)) return i; return -1; }
+
+/* 调试/自动化句柄（只读状态 + 纯函数，不影响逻辑） */
+window.GameAPI = {
+  state: () => g,
+  shapes: SHAPE_DEFS,
+  fits: (s, r, x, y) => fits(g, s, r, x, y),
+  anyFit: (s, m) => anyFit(g, s, m),
+  mergeInfo: i => mergeInfo(g, i)
+};
+
+/* ================= 帮助（DOM 覆盖层） ================= */
+const helpEl = document.getElementById("help");
+const helpcardEl = document.getElementById("helpcard");
+helpcardEl.innerHTML = STR.helpHTML +
+  '<button id="startbtn">' + (THEME.id === "cyber" ? "接 入" : "开 炉") + "</button>" +
+  '<a id="themeToggle">⇄ 切换主题：' + THEME.otherName + "</a>";
+helpcardEl.querySelector("#startbtn").onclick = () => {
+  helpEl.classList.remove("show");
+  paused = false;
+  ac();
+};
+helpcardEl.querySelector("#themeToggle").onclick = () => {
+  try { localStorage.setItem("fb_theme", THEME.other); } catch (e) {}
+  location.href = location.pathname + "?theme=" + THEME.other;
+};
+function openHelp() { paused = true; helpEl.classList.add("show"); }
+openHelp();
+
+/* ================= 主循环 ================= */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.1, (now - last) / 1000); last = now;
+  if (!paused) {
+    tick(g, dt);
+    drainEvents();
+  }
+  ember(dt);
+  if (shakeT > 0) { shakeT -= dt; if (shakeT <= 0) shakeAmp = 0; }
+  if (hurtT > 0) hurtT -= dt;
+  if (fuseFlashT > 0) fuseFlashT -= dt;
+  if (castleFlashT > 0) castleFlashT -= dt;
+  if (boardShiftT > 0) boardShiftT -= dt;
+  if (clearAnim) clearAnim.t += dt;
+
+  ctx.save();
+  if (shakeAmp > 0) {
+    const k = shakeAmp * (shakeT / .45);
+    ctx.translate((Math.random() - .5) * k, (Math.random() - .5) * k);
+  }
+  drawBG(now / 1000);
+  if (L.orient === "d") drawPanel(); else drawTop();
+  drawFuse(now / 1000);
+  drawBelt(dt);
+  drawBoard();
+  drawCastle();
+  drawControls();
+  drawFx(dt);
+  drawHand();
+  if (hurtT > 0) {
+    const hg = ctx.createRadialGradient(DW / 2, DH / 2, DH * .3, DW / 2, DH / 2, DH * .75);
+    hg.addColorStop(0, "rgba(200,30,30,0)"); hg.addColorStop(1, "rgba(200,30,30," + (.5 * hurtT) + ")");
+    ctx.fillStyle = hg; ctx.fillRect(0, 0, DW, DH);
+  }
+  ctx.restore();
+  drawOverlay();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
