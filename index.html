@@ -49,7 +49,7 @@ body{
   <p><b class="g">3 个以上连通同色 → 充能</b>（发光），但不立即消除——<b class="w">扫线每数秒横扫全场，引爆所有充能组</b>：同一扫引爆的组越多倍率越高；引爆后坠落若形成新组，<b class="g">立即连锁引爆 ×2 ×3……</b></p>
   <p>每 4 次扫线，底部上顶一层<b class="w">暗格</b>：暗格不参与配色，只能被<b>相邻引爆震碎</b>。堆到顶就结束。</p>
   <p>抢在扫线前给大组充能、一次扫爆多组、铺设坠落连锁——这就是全部技巧。</p>
-  <div class="keys">键盘：←→ 移动 · ↑/X 旋转 · Z 反转 · ↓ 软降 · 空格硬降 · C 暂存<br>触屏：拖动移位 · 轻点旋转 · 下拖软降 · 快速下甩硬降</div>
+  <div class="keys">键盘：←→ 移动 · ↑/X 旋转 · Z 反转 · ↓ 软降 · 空格硬降 · C 暂存<br>触屏：拖动移位 · 轻点旋转 · 双击硬降 · 下拖软降</div>
   <button id="startbtn">启 动</button>
 </div></div>
 
@@ -451,9 +451,9 @@ function computeLayout() {
       sweepBar: { x: bx, y: by - 24, w: COLS * cell, h: 8 },
       stripY: 58,
       btns: {
-        rot:  { x: 35,  y: 690, w: 96, h: 46 },
-        hold: { x: 147, y: 690, w: 96, h: 46 },
-        hard: { x: 259, y: 690, w: 96, h: 46 }
+        rot:  { x: 30,  y: 684, w: 100, h: 52 },
+        hold: { x: 145, y: 684, w: 100, h: 52 },
+        hard: { x: 260, y: 684, w: 100, h: 52 }
       }
     };
   }
@@ -1064,18 +1064,21 @@ cv.addEventListener("pointermove", e => {
     const cell = B().cell;
     while (p.x - ptr.ax > cell * .5) { applyAction(g, "R"); ptr.ax += cell; }
     while (p.x - ptr.ax < -cell * .5) { applyAction(g, "L"); ptr.ax -= cell; }
-    while (p.y - ptr.ay > cell * .8) { applyAction(g, "D"); ptr.ay += cell; }
+    while (p.y - ptr.ay > cell) { applyAction(g, "D"); ptr.ay += cell; }
   }
 });
+let lastTap = 0;
 cv.addEventListener("pointerup", e => {
   const p = toDesign(e);
   ptr.down = false;
   if (ptr.drag) {
     ptr.drag = false;
-    const dt = performance.now() - ptr.t;
-    const dy = p.y - ptr.oy, dx = p.x - ptr.ox;
-    if (dt < 250 && ptr.moved < 14) applyAction(g, "U");               /* 轻点=旋转 */
-    else if (dt < 380 && dy > 70 && Math.abs(dy) > Math.abs(dx) * 1.5) applyAction(g, "H"); /* 下甩=硬降 */
+    const dt = performance.now() - ptr.t, nowT = performance.now();
+    /* 严格轻点：短按 + 几乎无位移才算，拖动收尾不会误判 */
+    if (dt < 220 && ptr.moved < 10) {
+      if (nowT - lastTap < 300) { lastTap = 0; applyAction(g, "H"); }  /* 双击 = 硬降 */
+      else { lastTap = nowT; applyAction(g, "U"); }                    /* 轻点 = 旋转 */
+    }
   }
 });
 cv.addEventListener("contextmenu", e => e.preventDefault());
@@ -1152,10 +1155,10 @@ function frame(now) {
   });
   drawBoard(now / 1000);
   if (L.btns) {
-    drawOvBtn2(L.btns.rot, "旋转", !g.over);
-    drawOvBtn2(L.btns.hold, "暂存", !g.over && !g.holdUsed);
-    drawOvBtn2(L.btns.hard, "硬降", !g.over);
-    txt("拖动移位 · 轻点旋转 · 下甩硬降", DW / 2, 752, 10, "#5f6d94", "center");
+    drawOvBtn2(L.btns.rot, "旋转", !g.over, false);
+    drawOvBtn2(L.btns.hold, "暂存", !g.over && !g.holdUsed, false);
+    drawOvBtn2(L.btns.hard, "硬降", !g.over, true);
+    txt("拖动移位 · 轻点旋转 · 双击硬降", DW / 2, 756, 10, "#5f6d94", "center");
   }
   drawFx(dt);
   if (surgeFlashT > 0) {
@@ -1168,11 +1171,13 @@ function frame(now) {
   drawOverlay();
   requestAnimationFrame(frame);
 }
-function drawOvBtn2(b, label, enabled) {
+function drawOvBtn2(b, label, enabled, accent) {
   ctx.globalAlpha = enabled ? 1 : .4;
-  ctx.fillStyle = grad(0, b.y, 0, b.y + b.h, [[0, "#22304f"], [1, "#141c30"]]);
+  ctx.fillStyle = accent
+    ? grad(0, b.y, 0, b.y + b.h, [[0, "#1d4a66"], [1, "#122a3d"]])
+    : grad(0, b.y, 0, b.y + b.h, [[0, "#22304f"], [1, "#141c30"]]);
   rr(b.x, b.y, b.w, b.h, 10); ctx.fill();
-  ctx.strokeStyle = "rgba(120,160,255,.35)"; ctx.lineWidth = 1.2;
+  ctx.strokeStyle = accent ? "rgba(125,243,255,.6)" : "rgba(120,160,255,.35)"; ctx.lineWidth = 1.2;
   rr(b.x, b.y, b.w, b.h, 10); ctx.stroke();
   txt(label, b.x + b.w / 2, b.y + b.h / 2 + 1, 15, PARCH, "center", "600");
   ctx.globalAlpha = 1;
