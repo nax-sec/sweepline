@@ -61,7 +61,7 @@ body{
    ============================================================ */
 
 /* ---------------- 配置 ---------------- */
-const COLS = 8, ROWS = 14;
+const COLS = 10, ROWS = 16;
 const N_COLORS = 3;                       // 1..4 色，9=暗格
 const FALL0 = 0.78, FALL_MIN = 0.22, FALL_RAMP = 0.00006;   // 下落间隔（秒）随分提速
 const SWEEP0 = 6.0, SWEEP_MIN = 3.6, SWEEP_RAMP = 0.012;    // 扫线周期（秒）随时间提速
@@ -432,7 +432,7 @@ let DW = 390, DH = 844, L = null, scale = 1, ox = 0, oy = 0;
 function computeLayout() {
   if (innerWidth / innerHeight >= 1.02) {
     DW = 1180; DH = 760;
-    const cell = 44, bx = 414, by = 72;
+    const cell = 42, bx = 380, by = 44;
     L = {
       orient: "d",
       board: { x: bx, y: by, cell },
@@ -444,16 +444,16 @@ function computeLayout() {
     };
   } else {
     DW = 390; DH = 844;
-    const cell = 38, bx = (390 - COLS * cell) / 2, by = 126;
+    const cell = 36, bx = (390 - COLS * cell) / 2, by = 120;
     L = {
       orient: "p",
       board: { x: bx, y: by, cell },
-      sweepBar: { x: bx, y: by - 24, w: COLS * cell, h: 8 },
+      sweepBar: { x: bx, y: by - 22, w: COLS * cell, h: 8 },
       stripY: 58,
       btns: {
-        rot:  { x: 30,  y: 684, w: 100, h: 52 },
-        hold: { x: 145, y: 684, w: 100, h: 52 },
-        hard: { x: 260, y: 684, w: 100, h: 52 }
+        rot:  { x: 30,  y: 708, w: 100, h: 52 },
+        hold: { x: 145, y: 708, w: 100, h: 52 },
+        hard: { x: 260, y: 708, w: 100, h: 52 }
       }
     };
   }
@@ -1158,7 +1158,7 @@ function frame(now) {
     drawOvBtn2(L.btns.rot, "旋转", !g.over, false);
     drawOvBtn2(L.btns.hold, "暂存", !g.over && !g.holdUsed, false);
     drawOvBtn2(L.btns.hard, "硬降", !g.over, true);
-    txt("拖动移位 · 轻点旋转 · 双击硬降", DW / 2, 756, 10, "#5f6d94", "center");
+    txt("拖动移位 · 轻点旋转 · 双击硬降", DW / 2, 772, 10, "#5f6d94", "center");
   }
   drawFx(dt);
   if (surgeFlashT > 0) {
